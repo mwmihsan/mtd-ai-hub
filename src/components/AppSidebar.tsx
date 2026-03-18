@@ -1,6 +1,6 @@
 import { NavLink as RouterNavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { FileSpreadsheet, Bot, Sun, Moon } from "lucide-react";
+import { FileSpreadsheet, Bot, Sun, Moon, LayoutDashboard, Shield } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export function AppSidebar() {
@@ -18,7 +18,9 @@ export function AppSidebar() {
 
   const links = [
     { to: "/", label: "Accounts Hub", icon: FileSpreadsheet },
+    { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { to: "/agent", label: "Accounts Agent", icon: Bot },
+    { to: "/admin", label: "Admin Panel", icon: Shield },
   ];
 
   return (
