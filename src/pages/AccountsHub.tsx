@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAccountsStore, UploadedFile } from "@/stores/accountsStore";
 import { FileUploadZone } from "@/components/FileUploadZone";
 import { DataPreviewTable } from "@/components/DataPreviewTable";
 import { AppLayout } from "@/components/AppLayout";
-import { FileSpreadsheet, Trash2, Eye, Search } from "lucide-react";
+import { FileSpreadsheet, Trash2, Eye, Search, Loader2 } from "lucide-react";
 
 export default function AccountsHub() {
-  const { files, removeFile } = useAccountsStore();
+  const { files, removeFile, loadFromCloud, loading } = useAccountsStore();
   const [previewFile, setPreviewFile] = useState<UploadedFile | null>(null);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    loadFromCloud();
+  }, [loadFromCloud]);
 
   return (
     <AppLayout>
@@ -21,6 +25,13 @@ export default function AccountsHub() {
         </div>
 
         <FileUploadZone />
+
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-sm text-muted-foreground">Loading from cloud...</span>
+          </div>
+        )}
 
         {files.length > 0 && (
           <div className="space-y-4">
@@ -69,9 +80,9 @@ export default function AccountsHub() {
                       <Eye className="h-4 w-4" />
                     </button>
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         if (previewFile?.id === file.id) setPreviewFile(null);
-                        removeFile(file.id);
+                        await removeFile(file.id);
                       }}
                       className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                       title="Remove"
