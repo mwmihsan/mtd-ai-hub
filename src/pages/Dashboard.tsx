@@ -25,14 +25,12 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  ResponsiveContainer,
 } from "recharts";
 import {
   TrendingUp,
   ShoppingCart,
   Receipt,
   UtensilsCrossed,
-  Users,
   Loader2,
 } from "lucide-react";
 
@@ -72,7 +70,13 @@ export default function Dashboard() {
       supabase.from("account_rows").select("*"),
     ]);
     if (filesRes.data) setFiles(filesRes.data as FileRecord[]);
-    if (rowsRes.data) setRows(rowsRes.data as AccountRow[]);
+    if (rowsRes.data) {
+      // Filter empty rows
+      const valid = (rowsRes.data as AccountRow[]).filter(
+        (r) => r.date || r.account || r.sub_account || r.description || Number(r.debit) > 0 || Number(r.credit) > 0
+      );
+      setRows(valid);
+    }
     setLoading(false);
   }
 
@@ -110,26 +114,13 @@ export default function Dashboard() {
         .reduce((s, r) => s + Number(r.debit), 0),
     [filteredRows]
   );
-  const staffSalary = useMemo(
-    () =>
-      filteredRows
-        .filter(
-          (r) =>
-            r.account?.toLowerCase() === "staff" ||
-            r.account?.toLowerCase() === "workers" ||
-            r.sub_account?.toLowerCase().includes("salary") ||
-            r.description?.toLowerCase().includes("salary")
-        )
-        .reduce((s, r) => s + Number(r.debit), 0),
-    [filteredRows]
-  );
 
   // Chart data: per-month aggregates
   const monthlyChartData = useMemo(() => {
-    const monthMap: Record<string, { month: string; sales: number; purchase: number; expense: number; meals: number; salary: number }> = {};
+    const monthMap: Record<string, { month: string; sales: number; purchase: number; expense: number; meals: number; staff: number }> = {};
     for (const file of files) {
       if (!monthMap[file.month]) {
-        monthMap[file.month] = { month: file.month, sales: 0, purchase: 0, expense: 0, meals: 0, salary: 0 };
+        monthMap[file.month] = { month: file.month, sales: 0, purchase: 0, expense: 0, meals: 0, staff: 0 };
       }
     }
     for (const row of rows) {
@@ -147,7 +138,7 @@ export default function Dashboard() {
         if (sub.includes("meal") || desc.includes("meal")) m.meals += Number(row.debit);
       }
       if (acc === "staff" || acc === "workers" || sub.includes("salary") || desc.includes("salary")) {
-        m.salary += Number(row.debit);
+        m.staff += Number(row.debit);
       }
     }
     return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
@@ -158,7 +149,7 @@ export default function Dashboard() {
     purchase: { label: "Purchase", color: "hsl(var(--primary))" },
     expense: { label: "Expense", color: "hsl(var(--destructive))" },
     meals: { label: "Meals", color: "hsl(var(--warning))" },
-    salary: { label: "Salary", color: "hsl(var(--ring))" },
+    staff: { label: "Staff Salary", color: "hsl(var(--ring))" },
   };
 
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -168,7 +159,6 @@ export default function Dashboard() {
     { title: "Total Purchase", value: totalPurchase, icon: ShoppingCart, color: "text-primary" },
     { title: "Total Expense", value: totalExpense, icon: Receipt, color: "text-destructive" },
     { title: "Meals Expense", value: mealsExpense, icon: UtensilsCrossed, color: "text-warning" },
-    { title: "Staff Salary", value: staffSalary, icon: Users, color: "text-ring" },
   ];
 
   if (loading) {
@@ -202,8 +192,8 @@ export default function Dashboard() {
           </Select>
         </div>
 
-        {/* Summary cards */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {/* Summary cards - 4 cards without Staff Salary */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {cards.map((card) => (
             <Card key={card.title} className="animate-fade-in transition-shadow hover:shadow-md">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -229,7 +219,7 @@ export default function Dashboard() {
                 <ChartContainer config={chartConfig} className="h-[280px] w-full">
                   <BarChart data={monthlyChartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" className="text-xs" tick={{ fill: "hsl(var(--muted-foreground))" }} />
+                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
                     <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Bar dataKey="sales" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
@@ -274,10 +264,10 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            {/* Multi-bar: Meals + Salary */}
+            {/* Meals chart - separate */}
             <Card className="animate-fade-in">
               <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Meals & Staff Salary</CardTitle>
+                <CardTitle className="text-sm font-semibold text-foreground">Monthly Meals Expense</CardTitle>
               </CardHeader>
               <CardContent>
                 <ChartContainer config={chartConfig} className="h-[280px] w-full">
@@ -287,7 +277,24 @@ export default function Dashboard() {
                     <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Bar dataKey="meals" fill="hsl(var(--warning))" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="salary" fill="hsl(var(--ring))" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ChartContainer>
+              </CardContent>
+            </Card>
+
+            {/* Staff Salary chart - separate */}
+            <Card className="animate-fade-in">
+              <CardHeader>
+                <CardTitle className="text-sm font-semibold text-foreground">Monthly Staff Salary</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ChartContainer config={chartConfig} className="h-[280px] w-full">
+                  <BarChart data={monthlyChartData}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
+                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="staff" fill="hsl(var(--ring))" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ChartContainer>
               </CardContent>
