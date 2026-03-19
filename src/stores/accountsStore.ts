@@ -52,6 +52,20 @@ function parseWorkbook(buffer: ArrayBuffer) {
   return { jsonData, rawData, headers };
 }
 
+/** Look up a value from a parsed row using case-insensitive key matching */
+function getCaseInsensitive(row: Record<string, any>, ...keys: string[]): any {
+  for (const key of keys) {
+    // Exact match
+    if (row[key] !== undefined) return row[key];
+    // Case-insensitive match
+    const lowerKey = key.toLowerCase();
+    for (const k of Object.keys(row)) {
+      if (k.toLowerCase() === lowerKey) return row[k];
+    }
+  }
+  return undefined;
+}
+
 export const useAccountsStore = create<AccountsStore>((set, get) => ({
   files: [],
   loading: false,
@@ -85,14 +99,14 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
 
     // Save account rows to DB
     if (jsonData.length > 0) {
-      const rows = jsonData.map((row) => ({
+      const rows = jsonData.map((row: any) => ({
         file_id: fileId,
-        date: String(row.Date || ''),
-        account: String(row.Account || ''),
-        sub_account: String(row['Sub Account'] || ''),
-        description: String(row.Discerption || ''),
-        debit: Number(row.Debit) || 0,
-        credit: Number(row.Credit) || 0,
+        date: String(getCaseInsensitive(row, 'Date', 'date') ?? ''),
+        account: String(getCaseInsensitive(row, 'Account', 'account') ?? ''),
+        sub_account: String(getCaseInsensitive(row, 'Sub Account', 'Sub_Account', 'SubAccount', 'sub_account') ?? ''),
+        description: String(getCaseInsensitive(row, 'Discerption', 'Description', 'description', 'discerption') ?? ''),
+        debit: Number(getCaseInsensitive(row, 'Debit', 'debit')) || 0,
+        credit: Number(getCaseInsensitive(row, 'Credit', 'credit')) || 0,
       }));
 
       // Insert in batches of 500
@@ -152,15 +166,35 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
           .download(dbFile.storage_path);
 
         if (dlError || !fileData) {
-          // If file missing from storage, still show metadata
+          // If file missing from storage, try loading from DB rows as fallback
+          const { data: dbRows } = await supabase
+            .from('account_rows')
+            .select('*')
+            .eq('file_id', dbFile.id);
+
+          const fallbackData: AccountRow[] = (dbRows || []).map((r: any) => ({
+            Date: r.date || '',
+            Account: r.account || '',
+            'Sub Account': r.sub_account || '',
+            Discerption: r.description || '',
+            Debit: Number(r.debit) || 0,
+            Credit: Number(r.credit) || 0,
+          }));
+          const fallbackHeaders = fallbackData.length > 0
+            ? ['Date', 'Account', 'Sub Account', 'Discerption', 'Debit', 'Credit']
+            : [];
+          const fallbackRaw: string[][] = fallbackData.length > 0
+            ? [fallbackHeaders, ...fallbackData.map(r => [r.Date, r.Account, r['Sub Account'], r.Discerption, String(r.Debit), String(r.Credit)])]
+            : [];
+
           loadedFiles.push({
             id: dbFile.id,
             name: dbFile.file_name,
             month: dbFile.month,
             uploadDate: dbFile.upload_date,
-            data: [],
-            raw: [],
-            headers: [],
+            data: fallbackData,
+            raw: fallbackRaw,
+            headers: fallbackHeaders,
             storagePath: dbFile.storage_path,
           });
           continue;
