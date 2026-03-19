@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { supabase } from "@/integrations/supabase/client";
-import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X } from "lucide-react";
+import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import * as XLSX from "xlsx";
 
@@ -14,6 +14,7 @@ interface ChatAttachment {
 }
 
 interface Message {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   attachments?: ChatAttachment[];
@@ -43,17 +44,58 @@ export default function AccountsAgent() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [chatLoaded, setChatLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { loadFromCloud, files } = useAccountsStore();
 
   useEffect(() => {
     loadFromCloud();
+    loadChatHistory();
   }, [loadFromCloud]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  // Load chat history from cloud
+  async function loadChatHistory() {
+    const { data } = await supabase
+      .from("chat_messages")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (data && data.length > 0) {
+      setMessages(
+        data.map((m: any) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          attachments: m.attachments || undefined,
+        }))
+      );
+    }
+    setChatLoaded(true);
+  }
+
+  // Save a message to cloud
+  async function saveMessage(msg: Message) {
+    const { data } = await supabase
+      .from("chat_messages")
+      .insert({
+        role: msg.role,
+        content: msg.content,
+        attachments: msg.attachments ? JSON.parse(JSON.stringify(msg.attachments.map(a => ({ name: a.name, type: a.type, preview: a.preview })))) : null,
+      })
+      .select()
+      .single();
+    return data?.id;
+  }
+
+  // Clear chat history
+  async function clearChat() {
+    await supabase.from("chat_messages").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    setMessages([]);
+  }
 
   // Load cloud data context
   const getCloudContext = useCallback(async () => {
@@ -61,8 +103,13 @@ export default function AccountsAgent() {
     const { data: dbFiles } = await supabase.from("uploaded_files").select("*");
     if (!rows || !dbFiles || rows.length === 0) return "No files uploaded yet.";
 
-    const grouped: Record<string, typeof rows> = {};
-    for (const row of rows) {
+    // Filter empty rows
+    const validRows = rows.filter(
+      (r: any) => r.date || r.account || r.sub_account || r.description || Number(r.debit) > 0 || Number(r.credit) > 0
+    );
+
+    const grouped: Record<string, typeof validRows> = {};
+    for (const row of validRows) {
       const file = dbFiles.find((f: any) => f.id === row.file_id);
       const key = file ? `${(file as any).file_name} (${(file as any).month})` : row.file_id;
       if (!grouped[key]) grouped[key] = [];
@@ -100,6 +147,10 @@ export default function AccountsAgent() {
 
   const removeAttachment = (index: number) => setAttachments((prev) => prev.filter((_, i) => i !== index));
 
+  const handleSuggestionClick = (suggestion: string) => {
+    setInput(suggestion);
+  };
+
   const sendMessage = async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || isLoading) return;
@@ -110,6 +161,9 @@ export default function AccountsAgent() {
     setInput("");
     setAttachments([]);
     setIsLoading(true);
+
+    // Save user message to cloud
+    await saveMessage(userMsg);
 
     // Get cloud data
     const cloudContext = await getCloudContext();
@@ -191,25 +245,74 @@ export default function AccountsAgent() {
           }
         }
       }
+
+      // Save assistant response to cloud
+      if (assistantSoFar) {
+        await saveMessage({ role: "assistant", content: assistantSoFar });
+      }
     } catch (e: any) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message || "Something went wrong"}` }]);
+      const errMsg = `Error: ${e.message || "Something went wrong"}`;
+      setMessages((prev) => [...prev, { role: "assistant", content: errMsg }]);
+      await saveMessage({ role: "assistant", content: errMsg });
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Generate follow-up suggestions based on last assistant message
+  const getSuggestions = useCallback((): string[] => {
+    if (messages.length === 0) return [];
+    const last = messages[messages.length - 1];
+    if (last.role !== "assistant") return [];
+    const content = last.content.toLowerCase();
+
+    const suggestions: string[] = [];
+    if (content.includes("sale")) {
+      suggestions.push("Show sales details", "Show return sales");
+    }
+    if (content.includes("expense")) {
+      suggestions.push("Show expense breakdown", "Show meals expense");
+    }
+    if (content.includes("purchase")) {
+      suggestions.push("Show purchase details", "Compare with last month");
+    }
+    if (content.includes("profit")) {
+      suggestions.push("Show profit breakdown", "Monthly comparison");
+    }
+    if (suggestions.length === 0) {
+      suggestions.push("Show details", "Calculate profit", "Find mistakes");
+    }
+    return suggestions.slice(0, 4);
+  }, [messages]);
+
+  const suggestions = getSuggestions();
+
   return (
     <AppLayout>
       <div className="flex h-[calc(100vh-3rem)] flex-col">
-        <div className="mb-4">
-          <h1 className="text-2xl font-bold text-foreground">Accounts Agent</h1>
-          <p className="text-sm text-muted-foreground">
-            Ask questions about your shop accounts · {files.length} cloud file{files.length !== 1 ? "s" : ""} loaded
-          </p>
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Accounts Agent</h1>
+            <p className="text-sm text-muted-foreground">
+              Ask questions about your shop accounts · {files.length} cloud file{files.length !== 1 ? "s" : ""} loaded
+            </p>
+          </div>
+          {messages.length > 0 && (
+            <button
+              onClick={clearChat}
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="h-3 w-3" /> Clear Chat
+            </button>
+          )}
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto rounded-lg border border-border bg-card scrollbar-thin">
-          {messages.length === 0 ? (
+          {!chatLoaded ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 p-8">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
                 <Bot className="h-7 w-7 text-primary" />
@@ -267,6 +370,22 @@ export default function AccountsAgent() {
                   )}
                 </div>
               ))}
+
+              {/* Follow-up suggestions after assistant reply */}
+              {!isLoading && suggestions.length > 0 && messages[messages.length - 1]?.role === "assistant" && (
+                <div className="flex flex-wrap gap-2 pl-10 pt-2 animate-fade-in">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleSuggestionClick(s)}
+                      className="rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
                 <div className="flex gap-3 animate-fade-in">
                   <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">

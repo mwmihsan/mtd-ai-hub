@@ -65,12 +65,31 @@ export default function AdminPanel() {
 
   async function loadData() {
     setLoading(true);
-    const [fRes, rRes] = await Promise.all([
+    const [fRes] = await Promise.all([
       supabase.from("uploaded_files").select("*").order("upload_date", { ascending: false }),
-      supabase.from("account_rows").select("*"),
     ]);
     if (fRes.data) setFiles(fRes.data as FileRecord[]);
-    if (rRes.data) setRows(rRes.data as AccountRow[]);
+
+    // Fetch all rows with pagination to avoid 1000-row limit
+    let allRows: AccountRow[] = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data } = await supabase
+        .from("account_rows")
+        .select("*")
+        .range(from, from + pageSize - 1);
+      if (!data || data.length === 0) break;
+      allRows = [...allRows, ...(data as AccountRow[])];
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+
+    // Filter out completely empty rows
+    const validRows = allRows.filter(
+      (r) => r.date || r.account || r.sub_account || r.description || Number(r.debit) > 0 || Number(r.credit) > 0
+    );
+    setRows(validRows);
     setLoading(false);
   }
 
@@ -214,7 +233,7 @@ export default function AdminPanel() {
                     <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
                     <div className="flex-1 min-w-0">
                       <p className="truncate text-sm font-medium text-foreground">{file.file_name}</p>
-                      <p className="text-xs text-muted-foreground">{file.month} · {file.row_count} rows</p>
+                      <p className="text-xs text-muted-foreground">{file.month} · {file.row_count} rows · {new Date(file.upload_date).toLocaleDateString()}</p>
                     </div>
                     <button onClick={() => deleteFile(file.id)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
                       <Trash2 className="h-4 w-4" />
@@ -307,7 +326,6 @@ export default function AdminPanel() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Add new row inline */}
                   {addingRow && (
                     <tr className="border-b border-border bg-primary/5">
                       {["date", "account", "sub_account", "description"].map((field) => (
@@ -321,20 +339,10 @@ export default function AdminPanel() {
                         </td>
                       ))}
                       <td className="px-2 py-1.5">
-                        <input
-                          type="number"
-                          value={newRow.debit}
-                          onChange={(e) => setNewRow((p) => ({ ...p, debit: Number(e.target.value) }))}
-                          className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
-                        />
+                        <input type="number" value={newRow.debit} onChange={(e) => setNewRow((p) => ({ ...p, debit: Number(e.target.value) }))} className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring" />
                       </td>
                       <td className="px-2 py-1.5">
-                        <input
-                          type="number"
-                          value={newRow.credit}
-                          onChange={(e) => setNewRow((p) => ({ ...p, credit: Number(e.target.value) }))}
-                          className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
-                        />
+                        <input type="number" value={newRow.credit} onChange={(e) => setNewRow((p) => ({ ...p, credit: Number(e.target.value) }))} className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring" />
                       </td>
                       <td className="flex gap-1 px-2 py-1.5">
                         <button onClick={addRow} className="rounded p-1 text-success hover:bg-success/10"><Save className="h-4 w-4" /></button>
@@ -357,20 +365,10 @@ export default function AdminPanel() {
                             </td>
                           ))}
                           <td className="px-2 py-1.5">
-                            <input
-                              type="number"
-                              value={editData.debit ?? 0}
-                              onChange={(e) => setEditData((p) => ({ ...p, debit: Number(e.target.value) }))}
-                              className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
-                            />
+                            <input type="number" value={editData.debit ?? 0} onChange={(e) => setEditData((p) => ({ ...p, debit: Number(e.target.value) }))} className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring" />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input
-                              type="number"
-                              value={editData.credit ?? 0}
-                              onChange={(e) => setEditData((p) => ({ ...p, credit: Number(e.target.value) }))}
-                              className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
-                            />
+                            <input type="number" value={editData.credit ?? 0} onChange={(e) => setEditData((p) => ({ ...p, credit: Number(e.target.value) }))} className="h-8 w-24 rounded border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring" />
                           </td>
                           <td className="flex gap-1 px-2 py-1.5">
                             <button onClick={saveEdit} className="rounded p-1 text-success hover:bg-success/10"><Save className="h-4 w-4" /></button>

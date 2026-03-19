@@ -27,6 +27,14 @@ serve(async (req) => {
 6. ALWAYS show calculation steps when performing any math
 7. When showing totals, list each item that contributes to the total
 
+## RESPONSE STYLE:
+- Answer ONLY what was asked. Do NOT dump all data.
+- If user asks "total sales this month" → show ONLY the total sales amount with a brief calculation.
+- If user asks about expenses → show ONLY expense data.
+- Keep responses focused and concise.
+- Use short paragraphs and tables only when needed.
+- After your answer, do NOT suggest follow-up questions (the UI handles this).
+
 ## EXPECTED DATA COLUMNS:
 - Date: transaction date
 - Account: type (Sale, Purchase, Expense, w.w order, Supplier, Customer, Staff, Workers, Investment, Partner, Other income)
