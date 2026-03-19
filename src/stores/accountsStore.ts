@@ -97,17 +97,51 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
 
     if (dbError) throw dbError;
 
-    // Save account rows to DB
-    if (jsonData.length > 0) {
-      const rows = jsonData.map((row: any) => ({
+    // Save account rows to DB using raw positional data for reliability
+    if (rawData.length > 1) {
+      // Log headers for debugging
+      console.log('[AccountsStore] Excel headers detected:', headers);
+      if (rawData.length > 1) {
+        console.log('[AccountsStore] First data row:', rawData[1]);
+      }
+
+      // Build column index map: find which column index maps to which DB field
+      // Try matching by header name first, fall back to position
+      const colMap = { date: 0, account: 1, sub_account: 2, description: 3, debit: 4, credit: 5 };
+      const headerAliases: Record<string, string[]> = {
+        date: ['date'],
+        account: ['account'],
+        sub_account: ['sub account', 'sub_account', 'subaccount'],
+        description: ['discerption', 'description', 'describtion', 'desc'],
+        debit: ['debit'],
+        credit: ['credit'],
+      };
+
+      // Try to match headers by name (case-insensitive)
+      for (const [field, aliases] of Object.entries(headerAliases)) {
+        for (let i = 0; i < headers.length; i++) {
+          const h = headers[i].toLowerCase().trim();
+          if (aliases.includes(h)) {
+            colMap[field as keyof typeof colMap] = i;
+            break;
+          }
+        }
+      }
+
+      console.log('[AccountsStore] Column mapping:', colMap);
+
+      // Map raw rows (skip header row at index 0) to DB rows
+      const rows = rawData.slice(1).map((row) => ({
         file_id: fileId,
-        date: String(getCaseInsensitive(row, 'Date', 'date') ?? ''),
-        account: String(getCaseInsensitive(row, 'Account', 'account') ?? ''),
-        sub_account: String(getCaseInsensitive(row, 'Sub Account', 'Sub_Account', 'SubAccount', 'sub_account') ?? ''),
-        description: String(getCaseInsensitive(row, 'Discerption', 'Description', 'description', 'discerption') ?? ''),
-        debit: Number(getCaseInsensitive(row, 'Debit', 'debit')) || 0,
-        credit: Number(getCaseInsensitive(row, 'Credit', 'credit')) || 0,
+        date: String(row[colMap.date] ?? ''),
+        account: String(row[colMap.account] ?? ''),
+        sub_account: String(row[colMap.sub_account] ?? ''),
+        description: String(row[colMap.description] ?? ''),
+        debit: Number(row[colMap.debit]) || 0,
+        credit: Number(row[colMap.credit]) || 0,
       }));
+
+      console.log('[AccountsStore] First mapped DB row:', rows[0]);
 
       // Insert in batches of 500
       for (let i = 0; i < rows.length; i += 500) {
@@ -115,7 +149,10 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
         const { error: rowError } = await supabase
           .from('account_rows')
           .insert(batch);
-        if (rowError) throw rowError;
+        if (rowError) {
+          console.error('[AccountsStore] Insert error:', rowError);
+          throw rowError;
+        }
       }
     }
 
