@@ -6,7 +6,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import { TrendingUp, ShoppingCart, Receipt, UtensilsCrossed, Loader2, Users } from "lucide-react";
 
 interface AccountRow {
@@ -28,6 +28,19 @@ interface FileRecord {
   row_count: number;
 }
 
+const CHART_COLORS = [
+  "hsl(var(--primary))",
+  "hsl(var(--destructive))",
+  "hsl(var(--success))",
+  "hsl(var(--warning))",
+  "hsl(var(--ring))",
+  "hsl(210 70% 50%)",
+  "hsl(280 60% 55%)",
+  "hsl(30 80% 50%)",
+  "hsl(170 60% 40%)",
+  "hsl(350 70% 50%)",
+];
+
 export default function Dashboard() {
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [files, setFiles] = useState<FileRecord[]>([]);
@@ -38,7 +51,6 @@ export default function Dashboard() {
 
   async function loadData() {
     setLoading(true);
-    // Fetch all rows with pagination
     let allRows: AccountRow[] = [];
     let from = 0;
     const pageSize = 1000;
@@ -70,7 +82,6 @@ export default function Dashboard() {
     return rows.filter((r) => fileIds.includes(r.file_id));
   }, [rows, files, selectedMonth]);
 
-  // Helper to match account type case-insensitively
   const matchAccount = (row: AccountRow, ...types: string[]) =>
     types.some((t) => row.account?.toLowerCase() === t.toLowerCase());
 
@@ -111,40 +122,38 @@ export default function Dashboard() {
     [filteredRows]
   );
 
-  // Chart data per month
-  const monthlyChartData = useMemo(() => {
-    const monthMap: Record<string, { month: string; sales: number; purchase: number; expense: number; meals: number; staff: number }> = {};
-    for (const file of files) {
-      if (!monthMap[file.month]) monthMap[file.month] = { month: file.month, sales: 0, purchase: 0, expense: 0, meals: 0, staff: 0 };
+  // Build sub-account breakdown charts per account type
+  const buildSubAccountData = (accountTypes: string[], useCredit = false) => {
+    const matching = filteredRows.filter((r) => matchAccount(r, ...accountTypes));
+    const subMap: Record<string, number> = {};
+    for (const r of matching) {
+      const sub = r.sub_account?.trim() || r.description?.trim() || "Other";
+      subMap[sub] = (subMap[sub] || 0) + Number(useCredit ? r.credit : r.debit);
     }
-    for (const row of rows) {
-      const file = files.find((f) => f.id === row.file_id);
-      if (!file) continue;
-      const m = monthMap[file.month];
-      if (!m) continue;
-      const acc = row.account?.toLowerCase() || "";
-      const sub = row.sub_account?.toLowerCase() || "";
-      const desc = row.description?.toLowerCase() || "";
-      if (acc === "sale") m.sales += Number(row.credit);
-      if (acc === "purchase") m.purchase += Number(row.debit);
-      if (acc === "expense") {
-        m.expense += Number(row.debit);
-        if (sub.includes("meal") || desc.includes("meal")) m.meals += Number(row.debit);
-      }
-      if (acc === "staff" || acc === "workers" || sub.includes("salary") || desc.includes("salary")) {
-        m.staff += Number(row.debit);
-      }
-    }
-    return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
-  }, [rows, files]);
-
-  const chartConfig = {
-    sales: { label: "Sales", color: "hsl(var(--success))" },
-    purchase: { label: "Purchase", color: "hsl(var(--primary))" },
-    expense: { label: "Expense", color: "hsl(var(--destructive))" },
-    meals: { label: "Meals", color: "hsl(var(--warning))" },
-    staff: { label: "Staff Salary", color: "hsl(var(--ring))" },
+    return Object.entries(subMap)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount);
   };
+
+  const salesSubData = useMemo(() => buildSubAccountData(["sale"], true), [filteredRows]);
+  const purchaseSubData = useMemo(() => buildSubAccountData(["purchase"]), [filteredRows]);
+  const expenseSubData = useMemo(() => buildSubAccountData(["expense"]), [filteredRows]);
+  const staffSubData = useMemo(() => buildSubAccountData(["staff", "workers"]), [filteredRows]);
+  const mealsSubData = useMemo(() => {
+    const matching = filteredRows.filter(
+      (r) =>
+        matchAccount(r, "expense") &&
+        (r.sub_account?.toLowerCase().includes("meal") || r.description?.toLowerCase().includes("meal"))
+    );
+    const subMap: Record<string, number> = {};
+    for (const r of matching) {
+      const sub = r.sub_account?.trim() || r.description?.trim() || "Other";
+      subMap[sub] = (subMap[sub] || 0) + Number(r.debit);
+    }
+    return Object.entries(subMap)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [filteredRows]);
 
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -155,6 +164,18 @@ export default function Dashboard() {
     { title: "Meals Expense", value: mealsExpense, icon: UtensilsCrossed, color: "text-warning" },
     { title: "Staff Salary", value: staffSalary, icon: Users, color: "text-ring" },
   ];
+
+  const chartSections = [
+    { title: "Sales by Sub-Account", data: salesSubData, accentColor: "hsl(var(--success))" },
+    { title: "Purchase by Sub-Account", data: purchaseSubData, accentColor: "hsl(var(--primary))" },
+    { title: "Expense by Sub-Account", data: expenseSubData, accentColor: "hsl(var(--destructive))" },
+    { title: "Staff by Sub-Account", data: staffSubData, accentColor: "hsl(var(--ring))" },
+    { title: "Meals by Sub-Account", data: mealsSubData, accentColor: "hsl(var(--warning))" },
+  ];
+
+  const chartConfig = {
+    amount: { label: "Amount", color: "hsl(var(--primary))" },
+  };
 
   if (loading) {
     return (
@@ -202,37 +223,40 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* Charts */}
-        {monthlyChartData.length > 0 && (
+        {/* Sub-account breakdown charts */}
+        {filteredRows.length > 0 ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {([
-              { key: "sales", title: "Monthly Sales", color: "hsl(var(--success))" },
-              { key: "expense", title: "Monthly Expenses", color: "hsl(var(--destructive))" },
-              { key: "purchase", title: "Monthly Purchases", color: "hsl(var(--primary))" },
-              { key: "meals", title: "Monthly Meals Expense", color: "hsl(var(--warning))" },
-              { key: "staff", title: "Monthly Staff Salary", color: "hsl(var(--ring))" },
-            ] as const).map((chart) => (
-              <Card key={chart.key} className="animate-fade-in">
+            {chartSections.map((section) => (
+              <Card key={section.title} className="animate-fade-in">
                 <CardHeader className="px-3 pt-3 pb-1">
-                  <CardTitle className="text-xs sm:text-sm font-semibold text-foreground">{chart.title}</CardTitle>
+                  <CardTitle className="text-xs sm:text-sm font-semibold text-foreground">{section.title}</CardTitle>
                 </CardHeader>
                 <CardContent className="px-1 pb-3 sm:px-3">
-                  <ChartContainer config={chartConfig} className="h-[200px] sm:h-[280px] w-full">
-                    <BarChart data={monthlyChartData}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                      <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} />
-                      <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} width={50} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey={chart.key} fill={chart.color} radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ChartContainer>
+                  {section.data.length > 0 ? (
+                    <ChartContainer config={chartConfig} className="h-[220px] sm:h-[300px] w-full">
+                      <BarChart data={section.data} layout="vertical" margin={{ left: 10, right: 20, top: 5, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} />
+                        <YAxis
+                          dataKey="name"
+                          type="category"
+                          tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
+                          width={90}
+                        />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="amount" fill={section.accentColor} radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ChartContainer>
+                  ) : (
+                    <div className="flex h-[200px] items-center justify-center text-xs text-muted-foreground">
+                      No data available
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             ))}
           </div>
-        )}
-
-        {monthlyChartData.length === 0 && (
+        ) : (
           <Card>
             <CardContent className="flex h-40 items-center justify-center text-sm text-muted-foreground">
               No data yet. Upload Excel files in Admin Panel to see charts.
