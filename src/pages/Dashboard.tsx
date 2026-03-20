@@ -1,38 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/ui/chart";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-} from "recharts";
-import {
-  TrendingUp,
-  ShoppingCart,
-  Receipt,
-  UtensilsCrossed,
-  Loader2,
-} from "lucide-react";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
+import { TrendingUp, ShoppingCart, Receipt, UtensilsCrossed, Loader2, Users } from "lucide-react";
 
 interface AccountRow {
   id: string;
@@ -59,31 +34,35 @@ export default function Dashboard() {
   const [selectedMonth, setSelectedMonth] = useState<string>("all");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
-    const [filesRes, rowsRes] = await Promise.all([
+    // Fetch all rows with pagination
+    let allRows: AccountRow[] = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data } = await supabase.from("account_rows").select("*").range(from, from + pageSize - 1);
+      if (!data || data.length === 0) break;
+      allRows = [...allRows, ...(data as AccountRow[])];
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+
+    const [filesRes] = await Promise.all([
       supabase.from("uploaded_files").select("*").order("upload_date", { ascending: false }),
-      supabase.from("account_rows").select("*"),
     ]);
     if (filesRes.data) setFiles(filesRes.data as FileRecord[]);
-    if (rowsRes.data) {
-      // Filter empty rows
-      const valid = (rowsRes.data as AccountRow[]).filter(
-        (r) => r.date || r.account || r.sub_account || r.description || Number(r.debit) > 0 || Number(r.credit) > 0
-      );
-      setRows(valid);
-    }
+
+    const valid = allRows.filter(
+      (r) => r.date || r.account || r.sub_account || r.description || Number(r.debit) > 0 || Number(r.credit) > 0
+    );
+    setRows(valid);
     setLoading(false);
   }
 
-  const months = useMemo(() => {
-    const unique = [...new Set(files.map((f) => f.month))];
-    return unique.sort();
-  }, [files]);
+  const months = useMemo(() => [...new Set(files.map((f) => f.month))].sort(), [files]);
 
   const filteredRows = useMemo(() => {
     if (selectedMonth === "all") return rows;
@@ -91,16 +70,20 @@ export default function Dashboard() {
     return rows.filter((r) => fileIds.includes(r.file_id));
   }, [rows, files, selectedMonth]);
 
+  // Helper to match account type case-insensitively
+  const matchAccount = (row: AccountRow, ...types: string[]) =>
+    types.some((t) => row.account?.toLowerCase() === t.toLowerCase());
+
   const totalSales = useMemo(
-    () => filteredRows.filter((r) => r.account?.toLowerCase() === "sale").reduce((s, r) => s + Number(r.credit), 0),
+    () => filteredRows.filter((r) => matchAccount(r, "sale")).reduce((s, r) => s + Number(r.credit), 0),
     [filteredRows]
   );
   const totalPurchase = useMemo(
-    () => filteredRows.filter((r) => r.account?.toLowerCase() === "purchase").reduce((s, r) => s + Number(r.debit), 0),
+    () => filteredRows.filter((r) => matchAccount(r, "purchase")).reduce((s, r) => s + Number(r.debit), 0),
     [filteredRows]
   );
   const totalExpense = useMemo(
-    () => filteredRows.filter((r) => r.account?.toLowerCase() === "expense").reduce((s, r) => s + Number(r.debit), 0),
+    () => filteredRows.filter((r) => matchAccount(r, "expense")).reduce((s, r) => s + Number(r.debit), 0),
     [filteredRows]
   );
   const mealsExpense = useMemo(
@@ -108,20 +91,31 @@ export default function Dashboard() {
       filteredRows
         .filter(
           (r) =>
-            r.account?.toLowerCase() === "expense" &&
-            (r.sub_account?.toLowerCase().includes("meal") || r.description?.toLowerCase().includes("meal"))
+            matchAccount(r, "expense") &&
+            (r.sub_account?.toLowerCase().includes("meal") ||
+              r.description?.toLowerCase().includes("meal"))
+        )
+        .reduce((s, r) => s + Number(r.debit), 0),
+    [filteredRows]
+  );
+  const staffSalary = useMemo(
+    () =>
+      filteredRows
+        .filter(
+          (r) =>
+            matchAccount(r, "staff", "workers") ||
+            r.sub_account?.toLowerCase().includes("salary") ||
+            r.description?.toLowerCase().includes("salary")
         )
         .reduce((s, r) => s + Number(r.debit), 0),
     [filteredRows]
   );
 
-  // Chart data: per-month aggregates
+  // Chart data per month
   const monthlyChartData = useMemo(() => {
     const monthMap: Record<string, { month: string; sales: number; purchase: number; expense: number; meals: number; staff: number }> = {};
     for (const file of files) {
-      if (!monthMap[file.month]) {
-        monthMap[file.month] = { month: file.month, sales: 0, purchase: 0, expense: 0, meals: 0, staff: 0 };
-      }
+      if (!monthMap[file.month]) monthMap[file.month] = { month: file.month, sales: 0, purchase: 0, expense: 0, meals: 0, staff: 0 };
     }
     for (const row of rows) {
       const file = files.find((f) => f.id === row.file_id);
@@ -159,6 +153,7 @@ export default function Dashboard() {
     { title: "Total Purchase", value: totalPurchase, icon: ShoppingCart, color: "text-primary" },
     { title: "Total Expense", value: totalExpense, icon: Receipt, color: "text-destructive" },
     { title: "Meals Expense", value: mealsExpense, icon: UtensilsCrossed, color: "text-warning" },
+    { title: "Staff Salary", value: staffSalary, icon: Users, color: "text-ring" },
   ];
 
   if (loading) {
@@ -180,7 +175,7 @@ export default function Dashboard() {
             <p className="text-sm text-muted-foreground">Shop accounts summary</p>
           </div>
           <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-            <SelectTrigger className="w-[200px]">
+            <SelectTrigger className="w-full sm:w-[200px]">
               <SelectValue placeholder="Select month" />
             </SelectTrigger>
             <SelectContent>
@@ -192,16 +187,16 @@ export default function Dashboard() {
           </Select>
         </div>
 
-        {/* Summary cards - 4 cards without Staff Salary */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Summary cards */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {cards.map((card) => (
             <Card key={card.title} className="animate-fade-in transition-shadow hover:shadow-md">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">{card.title}</CardTitle>
-                <card.icon className={`h-4 w-4 ${card.color}`} />
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1 px-3 pt-3">
+                <CardTitle className="text-[10px] sm:text-xs font-medium text-muted-foreground">{card.title}</CardTitle>
+                <card.icon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${card.color}`} />
               </CardHeader>
-              <CardContent>
-                <div className="text-xl font-bold text-foreground">{fmt(card.value)}</div>
+              <CardContent className="px-3 pb-3">
+                <div className="text-base sm:text-xl font-bold text-foreground">{fmt(card.value)}</div>
               </CardContent>
             </Card>
           ))}
@@ -209,103 +204,38 @@ export default function Dashboard() {
 
         {/* Charts */}
         {monthlyChartData.length > 0 && (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            {/* Sales chart */}
-            <Card className="animate-fade-in">
-              <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Sales</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={chartConfig} className="h-[280px] w-full">
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="sales" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-
-            {/* Expense chart */}
-            <Card className="animate-fade-in">
-              <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Expenses</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={chartConfig} className="h-[280px] w-full">
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="expense" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-
-            {/* Purchase chart */}
-            <Card className="animate-fade-in">
-              <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Purchases</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={chartConfig} className="h-[280px] w-full">
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="purchase" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-
-            {/* Meals chart - separate */}
-            <Card className="animate-fade-in">
-              <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Meals Expense</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={chartConfig} className="h-[280px] w-full">
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="meals" fill="hsl(var(--warning))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-
-            {/* Staff Salary chart - separate */}
-            <Card className="animate-fade-in">
-              <CardHeader>
-                <CardTitle className="text-sm font-semibold text-foreground">Monthly Staff Salary</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={chartConfig} className="h-[280px] w-full">
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                    <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="staff" fill="hsl(var(--ring))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {([
+              { key: "sales", title: "Monthly Sales", color: "hsl(var(--success))" },
+              { key: "expense", title: "Monthly Expenses", color: "hsl(var(--destructive))" },
+              { key: "purchase", title: "Monthly Purchases", color: "hsl(var(--primary))" },
+              { key: "meals", title: "Monthly Meals Expense", color: "hsl(var(--warning))" },
+              { key: "staff", title: "Monthly Staff Salary", color: "hsl(var(--ring))" },
+            ] as const).map((chart) => (
+              <Card key={chart.key} className="animate-fade-in">
+                <CardHeader className="px-3 pt-3 pb-1">
+                  <CardTitle className="text-xs sm:text-sm font-semibold text-foreground">{chart.title}</CardTitle>
+                </CardHeader>
+                <CardContent className="px-1 pb-3 sm:px-3">
+                  <ChartContainer config={chartConfig} className="h-[200px] sm:h-[280px] w-full">
+                    <BarChart data={monthlyChartData}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                      <XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} />
+                      <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} width={50} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Bar dataKey={chart.key} fill={chart.color} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ChartContainer>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         )}
 
         {monthlyChartData.length === 0 && (
           <Card>
             <CardContent className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-              No data yet. Upload Excel files in Accounts Hub to see charts.
+              No data yet. Upload Excel files in Admin Panel to see charts.
             </CardContent>
           </Card>
         )}
