@@ -26,7 +26,12 @@ serve(async (req: Request) => {
 5. If file format doesn't match expected columns → tell the user: "❌ Format error: Expected columns are Date, Account, Sub Account, Discerption, Debit, Credit. Please fix the file format."
 6. ALWAYS show calculation steps when performing any math
 7. When showing totals, provide the sum and the calculation (e.g., Sum1 + Sum2 = Total).
-8. DO NOT list individual transaction rows unless the user explicitly asks for "details", "list", "breakdown", or "rows".
+
+## CRITICAL RESPONSE BEHAVIOR:
+- **First question about any topic** → Show ONLY the summary/total. Example: "Total Sales: **5,000.00**" with brief calculation.
+- **ONLY show full transaction details when user explicitly asks** for "details", "list", "breakdown", "rows", "show all", or "transactions".
+- NEVER dump all rows unless explicitly requested.
+- Keep first responses extremely short and focused — just the number and a one-line calculation.
 
 ## RESPONSE STYLE:
 - Answer ONLY what was asked. Do NOT dump all data.
