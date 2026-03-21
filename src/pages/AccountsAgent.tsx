@@ -427,7 +427,7 @@ export default function AccountsAgent() {
               ))}
 
               {/* Follow-up suggestions after assistant reply */}
-              {!isLoading && suggestions.length > 0 && messages[messages.length - 1]?.role === "assistant" && (
+              {!isLoading && messages[messages.length - 1]?.role === "assistant" && (
                 <div className="flex flex-wrap gap-2 pl-10 pt-2 animate-fade-in">
                   {suggestions.map((s) => (
                     <button
@@ -438,6 +438,12 @@ export default function AccountsAgent() {
                       {s}
                     </button>
                   ))}
+                  <button
+                    onClick={() => generatePDF(messages[messages.length - 1].content)}
+                    className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/10"
+                  >
+                    <FileDown className="h-3 w-3" /> Want PDF
+                  </button>
                 </div>
               )}
 
