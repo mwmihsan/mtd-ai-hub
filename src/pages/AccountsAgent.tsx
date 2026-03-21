@@ -261,6 +261,59 @@ export default function AccountsAgent() {
     }
   };
 
+  // Generate PDF from assistant reply
+  const generatePDF = useCallback((content: string) => {
+    const doc = new jsPDF();
+    const lines = content.split("\n").filter(Boolean);
+    
+    // Try to extract table rows (date, description, debit, credit)
+    const tableRows: string[][] = [];
+    for (const line of lines) {
+      // Match patterns like: 2025-10-05 | description | 25,000 | 100,000
+      const cells = line.split("|").map(c => c.trim()).filter(Boolean);
+      if (cells.length >= 2) {
+        tableRows.push(cells);
+        continue;
+      }
+      // Match markdown table rows
+      const mdCells = line.replace(/^\||\|$/g, "").split("|").map(c => c.trim()).filter(Boolean);
+      if (mdCells.length >= 2 && !mdCells.every(c => /^[-:]+$/.test(c))) {
+        tableRows.push(mdCells);
+      }
+    }
+
+    // Header
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Accounts Report", 14, 18);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 25);
+
+    if (tableRows.length > 1) {
+      const headers = tableRows[0];
+      const body = tableRows.slice(1);
+      autoTable(doc, {
+        startY: 32,
+        head: [headers],
+        body,
+        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [30, 30, 30], textColor: 255, fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [245, 245, 245] },
+      });
+    } else {
+      // Fallback: put text content in a simple table
+      const textLines = content.split("\n").filter(Boolean).map(l => [l]);
+      autoTable(doc, {
+        startY: 32,
+        body: textLines,
+        styles: { fontSize: 9, cellPadding: 3 },
+      });
+    }
+
+    doc.save("accounts-report.pdf");
+  }, []);
+
   // Generate follow-up suggestions based on last assistant message
   const getSuggestions = useCallback((): string[] => {
     if (messages.length === 0) return [];
