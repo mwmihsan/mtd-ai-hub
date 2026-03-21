@@ -2,9 +2,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { supabase } from "@/integrations/supabase/client";
-import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X, Trash2 } from "lucide-react";
+import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X, Trash2, FileDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 interface ChatAttachment {
   name: string;
@@ -259,6 +261,59 @@ export default function AccountsAgent() {
     }
   };
 
+  // Generate PDF from assistant reply
+  const generatePDF = useCallback((content: string) => {
+    const doc = new jsPDF();
+    const lines = content.split("\n").filter(Boolean);
+    
+    // Try to extract table rows (date, description, debit, credit)
+    const tableRows: string[][] = [];
+    for (const line of lines) {
+      // Match patterns like: 2025-10-05 | description | 25,000 | 100,000
+      const cells = line.split("|").map(c => c.trim()).filter(Boolean);
+      if (cells.length >= 2) {
+        tableRows.push(cells);
+        continue;
+      }
+      // Match markdown table rows
+      const mdCells = line.replace(/^\||\|$/g, "").split("|").map(c => c.trim()).filter(Boolean);
+      if (mdCells.length >= 2 && !mdCells.every(c => /^[-:]+$/.test(c))) {
+        tableRows.push(mdCells);
+      }
+    }
+
+    // Header
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Accounts Report", 14, 18);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 25);
+
+    if (tableRows.length > 1) {
+      const headers = tableRows[0];
+      const body = tableRows.slice(1);
+      autoTable(doc, {
+        startY: 32,
+        head: [headers],
+        body,
+        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [30, 30, 30], textColor: 255, fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [245, 245, 245] },
+      });
+    } else {
+      // Fallback: put text content in a simple table
+      const textLines = content.split("\n").filter(Boolean).map(l => [l]);
+      autoTable(doc, {
+        startY: 32,
+        body: textLines,
+        styles: { fontSize: 9, cellPadding: 3 },
+      });
+    }
+
+    doc.save("accounts-report.pdf");
+  }, []);
+
   // Generate follow-up suggestions based on last assistant message
   const getSuggestions = useCallback((): string[] => {
     if (messages.length === 0) return [];
@@ -289,7 +344,7 @@ export default function AccountsAgent() {
 
   return (
     <AppLayout>
-      <div className="flex h-[calc(100vh-3rem)] flex-col">
+      <div className="flex h-[calc(100vh-4rem)] md:h-[calc(100vh-3rem)] flex-col">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Accounts Agent</h1>
@@ -372,7 +427,7 @@ export default function AccountsAgent() {
               ))}
 
               {/* Follow-up suggestions after assistant reply */}
-              {!isLoading && suggestions.length > 0 && messages[messages.length - 1]?.role === "assistant" && (
+              {!isLoading && messages[messages.length - 1]?.role === "assistant" && (
                 <div className="flex flex-wrap gap-2 pl-10 pt-2 animate-fade-in">
                   {suggestions.map((s) => (
                     <button
@@ -383,6 +438,12 @@ export default function AccountsAgent() {
                       {s}
                     </button>
                   ))}
+                  <button
+                    onClick={() => generatePDF(messages[messages.length - 1].content)}
+                    className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/10"
+                  >
+                    <FileDown className="h-3 w-3" /> Want PDF
+                  </button>
                 </div>
               )}
 
