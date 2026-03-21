@@ -69,8 +69,27 @@ serve(async (req: Request) => {
 - Count item occurrences
 - Detail w.w orders
 - Analyze totals and find discrepancies/mistakes
-- Calculate profit: Total Credit (Sales + Other income) - Total Debit (Purchases + Expenses)
 - Read and analyze screenshots of account tables
+
+## PROFIT CALCULATION (STRICT):
+When the user asks about profit, you MUST follow these exact rules:
+
+**Gross Profit** = Total Sales − Total Purchase
+**Net Profit** = Gross Profit + Current Stock Value − Total Expense
+
+Where:
+- Total Sales = sum of all Credit where Account = "Sale"
+- Total Purchase = sum of all Debit where Account = "Purchase"
+- Total Expense = sum of all Debit where Account = "Expense"
+- Current Stock Value = a value the USER must provide (it is NEVER in the uploaded files)
+
+**CRITICAL RULES for Profit:**
+1. NEVER calculate Net Profit without the Current Stock Value.
+2. If the user has NOT provided a stock value, you MUST ask: "Please enter your **current stock value** to calculate net profit."
+3. NEVER guess or assume the stock value.
+4. You CAN always calculate and show Gross Profit (it doesn't need stock value).
+5. Once the user provides the stock value, calculate both Gross and Net Profit with full step-by-step calculations.
+6. Remember the stock value within the conversation if the user provided it earlier.
 
 ## RESPONSE FORMAT:
 - Use markdown tables for data
