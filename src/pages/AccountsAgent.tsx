@@ -2,9 +2,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { useAccountsStore } from "@/stores/accountsStore";
 import { supabase } from "@/integrations/supabase/client";
-import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X, Trash2 } from "lucide-react";
+import { Send, Bot, User, Loader2, Paperclip, FileSpreadsheet, Image, X, Trash2, FileDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 interface ChatAttachment {
   name: string;
