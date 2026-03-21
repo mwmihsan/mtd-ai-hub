@@ -269,9 +269,11 @@ export default function AccountsAgent() {
     // Try to extract table rows (date, description, debit, credit)
     const tableRows: string[][] = [];
     for (const line of lines) {
+      // Skip markdown separator rows like |:---|:---|
+      if (/^[\s|:-]+$/.test(line)) continue;
       // Match patterns like: 2025-10-05 | description | 25,000 | 100,000
       const cells = line.split("|").map(c => c.trim()).filter(Boolean);
-      if (cells.length >= 2) {
+      if (cells.length >= 2 && !cells.every(c => /^[-:]+$/.test(c))) {
         tableRows.push(cells);
         continue;
       }
