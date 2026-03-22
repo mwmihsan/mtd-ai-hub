@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Bot, Shield, Sun, Moon } from "lucide-react";
+import { LayoutDashboard, Bot, Shield, Sun, Moon, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 
