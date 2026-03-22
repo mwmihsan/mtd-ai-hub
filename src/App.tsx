@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import AccountsAgent from "./pages/AccountsAgent";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel";
+import TelegramSettings from "./pages/TelegramSettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
