@@ -118,9 +118,6 @@ async function aiDetectIntent(text: string, apiKey: string): Promise<ParsedInten
 - note: person name or sub-account name if mentioned, else null
 Use "staff_detail" when asking about a specific staff member or salary. Use "sub_account_lookup" when asking about any named sub-account.
 Example: {"intent":"staff_detail","amount":null,"note":"imtiyas"}`
-- amount: number if mentioned, else null
-- note: description if mentioned, else null
-Example: {"intent":"sales","amount":null,"note":null}`
           },
           { role: 'user', content: text }
         ],
