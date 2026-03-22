@@ -86,7 +86,7 @@ export default function Dashboard() {
     types.some((t) => row.account?.toLowerCase() === t.toLowerCase());
 
   const totalSales = useMemo(
-    () => filteredRows.filter((r) => matchAccount(r, "sale")).reduce((s, r) => s + Number(r.credit), 0),
+    () => filteredRows.filter((r) => matchAccount(r, "sale", "sales")).reduce((s, r) => s + Number(r.credit), 0),
     [filteredRows]
   );
   const totalPurchase = useMemo(
@@ -135,7 +135,7 @@ export default function Dashboard() {
       .sort((a, b) => b.amount - a.amount);
   };
 
-  const salesSubData = useMemo(() => buildSubAccountData(["sale"], true), [filteredRows]);
+  const salesSubData = useMemo(() => buildSubAccountData(["sale", "sales"], true), [filteredRows]);
   const purchaseSubData = useMemo(() => buildSubAccountData(["purchase"]), [filteredRows]);
   const expenseSubData = useMemo(() => buildSubAccountData(["expense"]), [filteredRows]);
   const staffSubData = useMemo(() => buildSubAccountData(["staff", "workers"]), [filteredRows]);
