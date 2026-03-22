@@ -276,8 +276,45 @@ async function handleReportCommand(supabase: any, settings: any): Promise<string
   return reply;
 }
 
+async function handleSubAccountLookup(supabase: any, name: string): Promise<string> {
+  if (!name) {
+    return `❓ Please specify a name.\n\nExample: <b>imtiyas</b> or <b>staff imtiyas</b>`;
+  }
+
+  const { data: rows } = await supabase
+    .from('account_rows')
+    .select('debit, credit, account, sub_account, date, description')
+    .ilike('sub_account', `%${name}%`);
+
+  const allRows = rows ?? [];
+  if (allRows.length === 0) {
+    return `❓ No records found for "<b>${name}</b>".\n\nCheck the name and try again.`;
+  }
+
+  const totalDebit = allRows.reduce((s: number, r: any) => s + Number(r.debit || 0), 0);
+  const totalCredit = allRows.reduce((s: number, r: any) => s + Number(r.credit || 0), 0);
+  const account = allRows[0]?.account || 'Unknown';
+
+  let reply = `👤 <b>${name.toUpperCase()}</b> (${account})\n\n`;
+  reply += `💳 Total Debit: ${totalDebit.toLocaleString()}\n`;
+  reply += `💰 Total Credit: ${totalCredit.toLocaleString()}\n`;
+  reply += `📊 ${allRows.length} transaction(s)\n`;
+
+  // Show recent transactions (last 5)
+  const recent = allRows.slice(-5);
+  if (recent.length > 0) {
+    reply += `\n📝 <b>Recent:</b>\n`;
+    recent.forEach((r: any) => {
+      const d = r.debit > 0 ? `Dr ${Number(r.debit).toLocaleString()}` : `Cr ${Number(r.credit).toLocaleString()}`;
+      reply += `  • ${r.date || '-'} | ${d} | ${r.description || '-'}\n`;
+    });
+  }
+
+  return reply;
+}
+
 function handleHelpCommand(): string {
-  return `🤖 <b>Accounts Bot</b>\n\nYou can type naturally:\n\n💰 <b>sales</b> — Total sales\n🛒 <b>purchase</b> — Total purchase\n💸 <b>expense</b> — Expense breakdown\n📊 <b>profit</b> — Profit report\n📦 <b>stock</b> — Current stock value\n📋 <b>report</b> — Full summary\n\n<i>You can also type freely like "today sales total" or "show profit"</i>`;
+  return `🤖 <b>Accounts Bot</b>\n\nYou can type naturally:\n\n💰 <b>sales</b> — Total sales\n🛒 <b>purchase</b> — Total purchase\n💸 <b>expense</b> — Expense breakdown\n📊 <b>profit</b> — Profit report\n📦 <b>stock</b> — Current stock value\n📋 <b>report</b> — Full summary\n👤 <b>imtiyas</b> — Staff/sub-account details\n\n<i>You can also type freely like "imtiyas salary" or "staff aazir"</i>`;
 }
 
 // --- Main ---
