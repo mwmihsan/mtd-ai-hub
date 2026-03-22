@@ -435,6 +435,10 @@ Deno.serve(async (req) => {
         case 'help':
           reply = handleHelpCommand();
           break;
+        case 'staff_detail':
+        case 'sub_account_lookup':
+          reply = await handleSubAccountLookup(supabase, intent.note || '');
+          break;
         case 'add_expense':
         case 'add_sale':
         case 'add_purchase':
