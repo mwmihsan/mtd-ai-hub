@@ -2,3 +2,9 @@ project_id = "iheikoaxfrykfuvsqikl"
 
 [functions.accounts-agent]
 verify_jwt = false
+
+[functions.telegram-poll]
+verify_jwt = false
+
+[functions.telegram-send]
+verify_jwt = false
