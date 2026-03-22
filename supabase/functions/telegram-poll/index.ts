@@ -132,7 +132,7 @@ Example: {"intent":"sales","amount":null,"note":null}`
             parameters: {
               type: 'object',
               properties: {
-                intent: { type: 'string', enum: ['sales', 'purchase', 'expense', 'profit', 'report', 'stock', 'add_expense', 'add_sale', 'add_purchase', 'help', 'unknown'] },
+                intent: { type: 'string', enum: ['sales', 'purchase', 'expense', 'profit', 'report', 'stock', 'add_expense', 'add_sale', 'add_purchase', 'staff_detail', 'sub_account_lookup', 'help', 'unknown'] },
                 amount: { type: 'number' },
                 note: { type: 'string' }
               },
