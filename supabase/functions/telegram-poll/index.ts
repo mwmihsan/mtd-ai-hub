@@ -20,7 +20,7 @@ interface ParsedIntent {
 }
 
 function parseMessage(text: string): ParsedIntent | null {
-  const lower = text.toLowerCase().trim();
+  const lower = text.toLowerCase().trim().replace(/^\//, ''); // strip leading slash
   const raw = lower;
 
   // Extract numbers
@@ -30,7 +30,7 @@ function parseMessage(text: string): ParsedIntent | null {
   // Remove numbers and extra spaces for note extraction
   const withoutNumbers = lower.replace(/\d+(?:\.\d+)?/g, '').trim();
 
-  // Keyword-based intent detection (order matters)
+  // --- Add transaction intents ---
   if (/\b(add\s+expense|expense\s+add|new\s+expense)\b/.test(lower) && amount) {
     const note = withoutNumbers.replace(/\b(add|expense|new)\b/g, '').trim() || undefined;
     return { intent: 'add_expense', amount, note, raw };
@@ -46,22 +46,33 @@ function parseMessage(text: string): ParsedIntent | null {
     return { intent: 'add_purchase', amount, note, raw };
   }
 
+  // --- Report ---
   if (/\b(full\s+report|send\s+report|report\s+pdf|monthly\s+report|report)\b/.test(lower)) {
     return { intent: 'report', raw };
   }
 
+  // --- Profit ---
   if (/\b(profit|net\s+profit|gross\s+profit|show\s+profit)\b/.test(lower)) {
     return { intent: 'profit', raw };
   }
 
+  // --- Staff with name: "staff imtiyas", "imtiyas salary", just "imtiyas" ---
+  if (/\b(staff|salary|worker)\b/.test(lower)) {
+    const name = lower.replace(/\b(staff|salary|worker|show|total|details?)\b/g, '').trim() || undefined;
+    return { intent: 'staff_detail', note: name, raw };
+  }
+
+  // --- Sales ---
   if (/\b(sale|sales|total\s+sales|sales\s+total|today\s+sales|sales\s+today)\b/.test(lower)) {
     return { intent: 'sales', raw };
   }
 
+  // --- Purchase ---
   if (/\b(purchase|purchases|total\s+purchase)\b/.test(lower)) {
     return { intent: 'purchase', raw };
   }
 
+  // --- Expense ---
   if (/\b(expense|expenses|total\s+expense)\b/.test(lower)) {
     if (amount) {
       const note = withoutNumbers.replace(/\b(expense|expenses|total)\b/g, '').trim() || undefined;
@@ -70,15 +81,22 @@ function parseMessage(text: string): ParsedIntent | null {
     return { intent: 'expense', raw };
   }
 
+  // --- Stock ---
   if (/\b(stock|current\s+stock|stock\s+value)\b/.test(lower)) {
     return { intent: 'stock', raw };
   }
 
-  if (/\b(help|start)\b/.test(lower) || lower === '/start' || lower === '/help') {
+  // --- Help ---
+  if (/\b(help|start)\b/.test(lower) || lower === 'start' || lower === 'help') {
     return { intent: 'help', raw };
   }
 
-  return null; // Unknown — will go to AI fallback
+  // --- Try as a sub-account name lookup (single word or name) ---
+  if (lower.length >= 3 && /^[a-z\s]+$/.test(lower)) {
+    return { intent: 'sub_account_lookup', note: lower.trim(), raw };
+  }
+
+  return null;
 }
 
 async function aiDetectIntent(text: string, apiKey: string): Promise<ParsedIntent> {
@@ -94,8 +112,12 @@ async function aiDetectIntent(text: string, apiKey: string): Promise<ParsedInten
         messages: [
           {
             role: 'system',
-            content: `You classify Telegram messages about shop accounts. Return ONLY a JSON object with these fields:
-- intent: one of "sales", "purchase", "expense", "profit", "report", "stock", "add_expense", "add_sale", "add_purchase", "help", "unknown"
+            content: `You classify Telegram messages about shop accounts. The shop has staff members (Imtiyas, Aazir, Stephan, Nadan, Salman, Arus Kokey). Return ONLY a JSON object with these fields:
+- intent: one of "sales", "purchase", "expense", "profit", "report", "stock", "add_expense", "add_sale", "add_purchase", "staff_detail", "sub_account_lookup", "help", "unknown"
+- amount: number if mentioned, else null
+- note: person name or sub-account name if mentioned, else null
+Use "staff_detail" when asking about a specific staff member or salary. Use "sub_account_lookup" when asking about any named sub-account.
+Example: {"intent":"staff_detail","amount":null,"note":"imtiyas"}`
 - amount: number if mentioned, else null
 - note: description if mentioned, else null
 Example: {"intent":"sales","amount":null,"note":null}`
@@ -110,7 +132,7 @@ Example: {"intent":"sales","amount":null,"note":null}`
             parameters: {
               type: 'object',
               properties: {
-                intent: { type: 'string', enum: ['sales', 'purchase', 'expense', 'profit', 'report', 'stock', 'add_expense', 'add_sale', 'add_purchase', 'help', 'unknown'] },
+                intent: { type: 'string', enum: ['sales', 'purchase', 'expense', 'profit', 'report', 'stock', 'add_expense', 'add_sale', 'add_purchase', 'staff_detail', 'sub_account_lookup', 'help', 'unknown'] },
                 amount: { type: 'number' },
                 note: { type: 'string' }
               },
@@ -254,8 +276,45 @@ async function handleReportCommand(supabase: any, settings: any): Promise<string
   return reply;
 }
 
+async function handleSubAccountLookup(supabase: any, name: string): Promise<string> {
+  if (!name) {
+    return `❓ Please specify a name.\n\nExample: <b>imtiyas</b> or <b>staff imtiyas</b>`;
+  }
+
+  const { data: rows } = await supabase
+    .from('account_rows')
+    .select('debit, credit, account, sub_account, date, description')
+    .ilike('sub_account', `%${name}%`);
+
+  const allRows = rows ?? [];
+  if (allRows.length === 0) {
+    return `❓ No records found for "<b>${name}</b>".\n\nCheck the name and try again.`;
+  }
+
+  const totalDebit = allRows.reduce((s: number, r: any) => s + Number(r.debit || 0), 0);
+  const totalCredit = allRows.reduce((s: number, r: any) => s + Number(r.credit || 0), 0);
+  const account = allRows[0]?.account || 'Unknown';
+
+  let reply = `👤 <b>${name.toUpperCase()}</b> (${account})\n\n`;
+  reply += `💳 Total Debit: ${totalDebit.toLocaleString()}\n`;
+  reply += `💰 Total Credit: ${totalCredit.toLocaleString()}\n`;
+  reply += `📊 ${allRows.length} transaction(s)\n`;
+
+  // Show recent transactions (last 5)
+  const recent = allRows.slice(-5);
+  if (recent.length > 0) {
+    reply += `\n📝 <b>Recent:</b>\n`;
+    recent.forEach((r: any) => {
+      const d = r.debit > 0 ? `Dr ${Number(r.debit).toLocaleString()}` : `Cr ${Number(r.credit).toLocaleString()}`;
+      reply += `  • ${r.date || '-'} | ${d} | ${r.description || '-'}\n`;
+    });
+  }
+
+  return reply;
+}
+
 function handleHelpCommand(): string {
-  return `🤖 <b>Accounts Bot</b>\n\nYou can type naturally:\n\n💰 <b>sales</b> — Total sales\n🛒 <b>purchase</b> — Total purchase\n💸 <b>expense</b> — Expense breakdown\n📊 <b>profit</b> — Profit report\n📦 <b>stock</b> — Current stock value\n📋 <b>report</b> — Full summary\n\n<i>You can also type freely like "today sales total" or "show profit"</i>`;
+  return `🤖 <b>Accounts Bot</b>\n\nYou can type naturally:\n\n💰 <b>sales</b> — Total sales\n🛒 <b>purchase</b> — Total purchase\n💸 <b>expense</b> — Expense breakdown\n📊 <b>profit</b> — Profit report\n📦 <b>stock</b> — Current stock value\n📋 <b>report</b> — Full summary\n👤 <b>imtiyas</b> — Staff/sub-account details\n\n<i>You can also type freely like "imtiyas salary" or "staff aazir"</i>`;
 }
 
 // --- Main ---
@@ -375,6 +434,10 @@ Deno.serve(async (req) => {
           break;
         case 'help':
           reply = handleHelpCommand();
+          break;
+        case 'staff_detail':
+        case 'sub_account_lookup':
+          reply = await handleSubAccountLookup(supabase, intent.note || '');
           break;
         case 'add_expense':
         case 'add_sale':
