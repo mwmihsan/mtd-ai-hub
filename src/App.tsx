@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import AccountsAgent from "./pages/AccountsAgent";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel";
+import TelegramSettings from "./pages/TelegramSettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -21,6 +22,7 @@ const App = () => (
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/agent" element={<AccountsAgent />} />
           <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/telegram" element={<TelegramSettings />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
