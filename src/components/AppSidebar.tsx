@@ -20,6 +20,7 @@ export function AppSidebar() {
     { to: "/", label: "Dashboard", icon: LayoutDashboard },
     { to: "/agent", label: "Accounts Agent", icon: Bot },
     { to: "/admin", label: "Admin Panel", icon: Shield },
+    { to: "/telegram", label: "Telegram Bot", icon: MessageCircle },
   ];
 
   return (

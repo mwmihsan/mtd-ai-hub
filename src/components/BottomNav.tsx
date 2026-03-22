@@ -7,6 +7,7 @@ const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/agent", label: "Agent", icon: Bot },
   { to: "/admin", label: "Admin", icon: Shield },
+  { to: "/telegram", label: "Telegram", icon: MessageCircle },
 ];
 
 export function BottomNav() {

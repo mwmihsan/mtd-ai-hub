@@ -22,6 +22,7 @@ const App = () => (
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/agent" element={<AccountsAgent />} />
           <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/telegram" element={<TelegramSettings />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
