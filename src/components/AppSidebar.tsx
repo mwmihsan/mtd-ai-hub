@@ -1,6 +1,6 @@
 import { NavLink as RouterNavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Bot, Sun, Moon, LayoutDashboard, Shield } from "lucide-react";
+import { Bot, Sun, Moon, LayoutDashboard, Shield, MessageCircle } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export function AppSidebar() {
