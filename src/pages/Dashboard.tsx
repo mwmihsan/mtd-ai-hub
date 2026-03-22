@@ -86,7 +86,7 @@ export default function Dashboard() {
     types.some((t) => row.account?.toLowerCase() === t.toLowerCase());
 
   const totalSales = useMemo(
-    () => filteredRows.filter((r) => matchAccount(r, "sale")).reduce((s, r) => s + Number(r.credit), 0),
+    () => filteredRows.filter((r) => matchAccount(r, "sale", "sales")).reduce((s, r) => s + Number(r.credit), 0),
     [filteredRows]
   );
   const totalPurchase = useMemo(
