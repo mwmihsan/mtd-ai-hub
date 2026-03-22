@@ -20,7 +20,7 @@ interface ParsedIntent {
 }
 
 function parseMessage(text: string): ParsedIntent | null {
-  const lower = text.toLowerCase().trim();
+  const lower = text.toLowerCase().trim().replace(/^\//, ''); // strip leading slash
   const raw = lower;
 
   // Extract numbers
@@ -30,7 +30,7 @@ function parseMessage(text: string): ParsedIntent | null {
   // Remove numbers and extra spaces for note extraction
   const withoutNumbers = lower.replace(/\d+(?:\.\d+)?/g, '').trim();
 
-  // Keyword-based intent detection (order matters)
+  // --- Add transaction intents ---
   if (/\b(add\s+expense|expense\s+add|new\s+expense)\b/.test(lower) && amount) {
     const note = withoutNumbers.replace(/\b(add|expense|new)\b/g, '').trim() || undefined;
     return { intent: 'add_expense', amount, note, raw };
@@ -46,22 +46,33 @@ function parseMessage(text: string): ParsedIntent | null {
     return { intent: 'add_purchase', amount, note, raw };
   }
 
+  // --- Report ---
   if (/\b(full\s+report|send\s+report|report\s+pdf|monthly\s+report|report)\b/.test(lower)) {
     return { intent: 'report', raw };
   }
 
+  // --- Profit ---
   if (/\b(profit|net\s+profit|gross\s+profit|show\s+profit)\b/.test(lower)) {
     return { intent: 'profit', raw };
   }
 
+  // --- Staff with name: "staff imtiyas", "imtiyas salary", just "imtiyas" ---
+  if (/\b(staff|salary|worker)\b/.test(lower)) {
+    const name = lower.replace(/\b(staff|salary|worker|show|total|details?)\b/g, '').trim() || undefined;
+    return { intent: 'staff_detail', note: name, raw };
+  }
+
+  // --- Sales ---
   if (/\b(sale|sales|total\s+sales|sales\s+total|today\s+sales|sales\s+today)\b/.test(lower)) {
     return { intent: 'sales', raw };
   }
 
+  // --- Purchase ---
   if (/\b(purchase|purchases|total\s+purchase)\b/.test(lower)) {
     return { intent: 'purchase', raw };
   }
 
+  // --- Expense ---
   if (/\b(expense|expenses|total\s+expense)\b/.test(lower)) {
     if (amount) {
       const note = withoutNumbers.replace(/\b(expense|expenses|total)\b/g, '').trim() || undefined;
@@ -70,15 +81,22 @@ function parseMessage(text: string): ParsedIntent | null {
     return { intent: 'expense', raw };
   }
 
+  // --- Stock ---
   if (/\b(stock|current\s+stock|stock\s+value)\b/.test(lower)) {
     return { intent: 'stock', raw };
   }
 
-  if (/\b(help|start)\b/.test(lower) || lower === '/start' || lower === '/help') {
+  // --- Help ---
+  if (/\b(help|start)\b/.test(lower) || lower === 'start' || lower === 'help') {
     return { intent: 'help', raw };
   }
 
-  return null; // Unknown — will go to AI fallback
+  // --- Try as a sub-account name lookup (single word or name) ---
+  if (lower.length >= 3 && /^[a-z\s]+$/.test(lower)) {
+    return { intent: 'sub_account_lookup', note: lower.trim(), raw };
+  }
+
+  return null;
 }
 
 async function aiDetectIntent(text: string, apiKey: string): Promise<ParsedIntent> {
