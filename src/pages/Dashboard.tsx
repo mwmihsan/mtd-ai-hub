@@ -135,7 +135,7 @@ export default function Dashboard() {
       .sort((a, b) => b.amount - a.amount);
   };
 
-  const salesSubData = useMemo(() => buildSubAccountData(["sale"], true), [filteredRows]);
+  const salesSubData = useMemo(() => buildSubAccountData(["sale", "sales"], true), [filteredRows]);
   const purchaseSubData = useMemo(() => buildSubAccountData(["purchase"]), [filteredRows]);
   const expenseSubData = useMemo(() => buildSubAccountData(["expense"]), [filteredRows]);
   const staffSubData = useMemo(() => buildSubAccountData(["staff", "workers"]), [filteredRows]);
