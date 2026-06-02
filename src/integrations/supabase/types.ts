@@ -97,6 +97,27 @@ export type Database = {
         }
         Relationships: []
       }
+      telegram_conversation_state: {
+        Row: {
+          chat_id: number
+          context: Json
+          pending: Json | null
+          updated_at: string
+        }
+        Insert: {
+          chat_id: number
+          context?: Json
+          pending?: Json | null
+          updated_at?: string
+        }
+        Update: {
+          chat_id?: number
+          context?: Json
+          pending?: Json | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       telegram_messages: {
         Row: {
           chat_id: number
