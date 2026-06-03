@@ -114,6 +114,95 @@ function dateInRange(rowDate: string | null | undefined, range: DateRange): bool
 
 // ---------- AI extraction ----------
 
+// ---------- Training: aliases, intents, corrections ----------
+
+function normalize(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Replace alias tokens in the message with the real sub-account name. */
+async function expandAliases(supabase: any, text: string): Promise<{ text: string; resolved?: string }> {
+  const { data: aliases } = await supabase.from('account_aliases').select('alias, sub_account_name');
+  if (!aliases?.length) return { text };
+  const norm = ' ' + normalize(text) + ' ';
+  let resolved: string | undefined;
+  let out = text;
+  // Longest aliases first to avoid partial overlap
+  const sorted = [...aliases].sort((a: any, b: any) => b.alias.length - a.alias.length);
+  for (const a of sorted) {
+    const al = ' ' + normalize(a.alias) + ' ';
+    if (norm.includes(al)) {
+      const re = new RegExp(`\\b${a.alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      out = out.replace(re, a.sub_account_name);
+      resolved = a.sub_account_name;
+      break;
+    }
+  }
+  return { text: out, resolved };
+}
+
+/** Look up the user's text against trained intent examples. */
+async function lookupTrainedIntent(supabase: any, text: string): Promise<string | null> {
+  const { data: examples } = await supabase.from('intent_training').select('example_text, intent');
+  if (!examples?.length) return null;
+  const target = normalize(text);
+  const targetTokens = new Set(target.split(' ').filter(Boolean));
+  let best: { intent: string; score: number } | null = null;
+  for (const ex of examples) {
+    const exNorm = normalize(ex.example_text);
+    if (target === exNorm) return ex.intent;
+    const exTokens = new Set(exNorm.split(' ').filter(Boolean));
+    let overlap = 0;
+    exTokens.forEach((t) => { if (targetTokens.has(t)) overlap++; });
+    const score = overlap / Math.max(exTokens.size, 1);
+    if (!best || score > best.score) best = { intent: ex.intent, score };
+  }
+  return best && best.score >= 0.75 ? best.intent : null;
+}
+
+/** Look up a previous correction for this query. */
+async function lookupCorrection(supabase: any, text: string): Promise<{ id: string; correct_result: string } | null> {
+  const target = normalize(text);
+  const { data } = await supabase.from('corrections').select('id, original_query, correct_result').limit(500);
+  if (!data?.length) return null;
+  const hit = data.find((c: any) => normalize(c.original_query) === target);
+  if (!hit) return null;
+  // Increment usage_count
+  await supabase.from('corrections')
+    .update({ usage_count: (await supabase.from('corrections').select('usage_count').eq('id', hit.id).single()).data?.usage_count + 1 || 1 })
+    .eq('id', hit.id);
+  return { id: hit.id, correct_result: hit.correct_result };
+}
+
+/** Map a trained intent string to an Extracted shape. */
+function trainedIntentToExtract(intent: string, customer_query: string | null): Extracted {
+  const map: Record<string, IntentKind> = {
+    sales_report: 'sales',
+    purchase_report: 'purchase',
+    expense_report: 'expense',
+    profit_report: 'profit',
+    full_report: 'report',
+    stock_value: 'stock',
+    customer_lookup: 'customer_lookup',
+    help: 'help',
+    reset: 'reset',
+    sales: 'sales',
+    purchase: 'purchase',
+    expense: 'expense',
+    profit: 'profit',
+    report: 'report',
+    stock: 'stock',
+  };
+  return {
+    intent: map[intent] || 'unknown',
+    customer_query,
+    date_text: null,
+    month: null,
+    year: null,
+    confidence: 0.95,
+  };
+}
+
 async function aiExtract(text: string, apiKey: string): Promise<Extracted> {
   try {
     const response = await fetch(AI_GATEWAY_URL, {
