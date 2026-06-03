@@ -40,10 +40,13 @@ interface ConvContext {
 }
 
 interface Pending {
-  type: 'customer_select' | 'date_year' | 'date_month';
+  type: 'customer_select' | 'date_year' | 'date_month' | 'correction_text';
   original: Extracted;                   // request to replay after answer
   candidates?: string[];                 // for customer_select
   available_years?: number[];            // for date_year
+  feedback_id?: string;                  // for correction_text
+  original_query?: string;               // for correction_text
+  wrong_result?: string;                 // for correction_text
 }
 
 // ---------- Helpers ----------
