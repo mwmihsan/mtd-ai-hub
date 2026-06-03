@@ -1,13 +1,12 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Bot, Shield, Sun, Moon, MessageCircle } from "lucide-react";
+import { Shield, Sun, Moon, MessageCircle, GraduationCap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 
 const links = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/agent", label: "Agent", icon: Bot },
   { to: "/admin", label: "Admin", icon: Shield },
   { to: "/telegram", label: "Telegram", icon: MessageCircle },
+  { to: "/training", label: "Training", icon: GraduationCap },
 ];
 
 export function BottomNav() {
