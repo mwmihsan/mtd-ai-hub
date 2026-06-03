@@ -731,7 +731,22 @@ Deno.serve(async (req) => {
   return new Response(JSON.stringify({ ok: true, processed: totalProcessed }), { headers: corsHeaders });
 });
 
-async function sendMessage(chatId: number, text: string, lovableKey: string, telegramKey: string) {
+async function sendMessage(
+  chatId: number,
+  text: string,
+  lovableKey: string,
+  telegramKey: string,
+  feedbackId?: string,
+) {
+  const body: any = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (feedbackId) {
+    body.reply_markup = {
+      inline_keyboard: [[
+        { text: '👍 Correct', callback_data: `fb:up:${feedbackId}` },
+        { text: '👎 Wrong',   callback_data: `fb:down:${feedbackId}` },
+      ]],
+    };
+  }
   await fetch(`${GATEWAY_URL}/sendMessage`, {
     method: 'POST',
     headers: {
@@ -739,6 +754,18 @@ async function sendMessage(chatId: number, text: string, lovableKey: string, tel
       'X-Connection-Api-Key': telegramKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    body: JSON.stringify(body),
+  });
+}
+
+async function answerCallback(callbackId: string, lovableKey: string, telegramKey: string, text?: string) {
+  await fetch(`${GATEWAY_URL}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${lovableKey}`,
+      'X-Connection-Api-Key': telegramKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ callback_query_id: callbackId, text: text || '' }),
   });
 }
