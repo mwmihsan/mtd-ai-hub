@@ -55,6 +55,17 @@ export default function TrainingCenter() {
     navigate("/auth", { replace: true });
   }
 
+  async function claimAdmin() {
+    const { data, error } = await supabase.rpc("claim_first_admin");
+    if (error) return toast.error(error.message);
+    if (data === true) {
+      toast.success("You are now admin");
+      setIsAdmin(true);
+    } else {
+      toast.error("An admin already exists. Ask them to grant you access.");
+    }
+  }
+
   if (checking) {
     return (
       <AppLayout>
@@ -78,9 +89,9 @@ export default function TrainingCenter() {
           <CardContent className="space-y-3">
             <p className="text-sm text-muted-foreground">
               Signed in as <span className="font-mono">{userEmail}</span>. Your account doesn't have the
-              admin role. Ask an existing admin to grant access via the <code>user_roles</code> table
-              (role <code>admin</code>).
+              admin role. If no admin exists yet, claim the role below.
             </p>
+            <Button onClick={claimAdmin} className="w-full">Claim admin (first user only)</Button>
             <Button variant="outline" onClick={signOut} className="w-full">
               <LogOut className="mr-2 h-4 w-4" /> Sign out
             </Button>
