@@ -673,7 +673,7 @@ Deno.serve(async (req) => {
         'X-Connection-Api-Key': TELEGRAM_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ offset: currentOffset, timeout, allowed_updates: ['message'] }),
+      body: JSON.stringify({ offset: currentOffset, timeout, allowed_updates: ['message', 'callback_query'] }),
     });
     const data = await response.json();
     if (!response.ok) return new Response(JSON.stringify({ error: data }), { status: 502, headers: corsHeaders });
@@ -695,42 +695,105 @@ Deno.serve(async (req) => {
     }
 
     for (const update of updates) {
+      // Handle feedback buttons
+      if (update.callback_query) {
+        const cb = update.callback_query;
+        const chatId = cb.message?.chat?.id;
+        const data: string = cb.data || '';
+        const [tag, rating, feedbackId] = data.split(':');
+        if (tag === 'fb' && chatId && feedbackId) {
+          // Record rating
+          const { data: fb } = await supabase
+            .from('feedback').select('id, query, response_summary')
+            .eq('id', feedbackId).maybeSingle();
+          await supabase.from('feedback').update({ rating }).eq('id', feedbackId);
+          await answerCallback(cb.id, LOVABLE_API_KEY, TELEGRAM_API_KEY,
+            rating === 'up' ? 'Thanks!' : 'Got it — please tell me the correct answer.');
+          if (rating === 'down' && fb?.query) {
+            const { context } = await loadState(supabase, chatId);
+            await saveState(supabase, chatId, {
+              type: 'correction_text',
+              original: { intent: 'unknown', confidence: 0 },
+              feedback_id: feedbackId,
+              original_query: fb.query,
+              wrong_result: fb.response_summary || '',
+            }, context);
+            await sendMessage(chatId, `📝 What should I have answered for:\n<i>${fb.query}</i>\n\nReply with the correct answer.`, LOVABLE_API_KEY, TELEGRAM_API_KEY);
+          }
+        }
+        continue;
+      }
+
       if (!update.message?.text) continue;
       const chatId = update.message.chat.id;
-      const text = String(update.message.text);
-      console.log(`[telegram-poll] from=${chatId} text="${text}"`);
+      const rawText = String(update.message.text);
+      console.log(`[telegram-poll] from=${chatId} text="${rawText}"`);
 
       const { pending, context } = await loadState(supabase, chatId);
 
-      // 1) If there's a pending clarification, try to answer it
+      // ===== Query pipeline =====
       let reply = '';
+      let feedbackId: string | undefined;
+      let attachFeedback = false;
+
+      // 1) Pending clarification
       if (pending) {
-        const r = await answerPending(supabase, chatId, pending, text, context, settings);
-        if (r.consumed) reply = r.reply;
+        const r = await answerPending(supabase, chatId, pending, rawText, context, settings);
+        if (r.consumed) { reply = r.reply; attachFeedback = pending.type !== 'correction_text'; }
       }
 
-      // 2) Otherwise extract a new intent
       if (!reply) {
-        const lowered = text.trim().toLowerCase();
+        const lowered = rawText.trim().toLowerCase();
         if (lowered === 'reset' || lowered === 'cancel' || lowered === 'new') {
           await saveState(supabase, chatId, null, {});
           reply = `🔄 Conversation context cleared.`;
         } else {
-          const ex = await aiExtract(text, LOVABLE_API_KEY);
-          console.log(`[telegram-poll] extracted`, ex);
-          if (ex.confidence < 0.5 || ex.intent === 'unknown') {
-            reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
-          } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
-            reply = `❓ Which customer or staff did you mean? Please send the name.`;
+          // 2) Corrections
+          const corr = await lookupCorrection(supabase, rawText);
+          if (corr) {
+            reply = `📚 <i>(from training)</i>\n\n${corr.correct_result}`;
+            attachFeedback = true;
           } else {
-            reply = await runIntent(supabase, ex, context, settings, chatId);
+            // 3) Alias expansion
+            const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 4) Trained intent
+            const trainedIntent = await lookupTrainedIntent(supabase, expanded);
+            let ex: Extracted;
+            if (trainedIntent) {
+              ex = trainedIntentToExtract(trainedIntent, resolved ?? null);
+              console.log(`[telegram-poll] trained intent=${trainedIntent}`);
+            } else {
+              // 5) AI extraction
+              ex = await aiExtract(expanded, LOVABLE_API_KEY);
+              if (resolved && !ex.customer_query) ex.customer_query = resolved;
+              console.log(`[telegram-poll] extracted`, ex);
+            }
+
+            if (ex.confidence < 0.5 || ex.intent === 'unknown') {
+              reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+            } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
+              reply = `❓ Which customer or staff did you mean? Please send the name.`;
+            } else {
+              reply = await runIntent(supabase, ex, context, settings, chatId);
+              attachFeedback = true;
+            }
           }
         }
       }
 
       if (reply) {
-        await sendMessage(chatId, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-        console.log(`[telegram-poll] replied to ${chatId}`);
+        // Log feedback row so 👍/👎 callbacks can reference it
+        if (attachFeedback) {
+          const { data: fbRow } = await supabase.from('feedback').insert({
+            chat_id: chatId,
+            query: rawText,
+            response_summary: reply.slice(0, 500),
+            rating: 'up', // default, overwritten on callback
+          }).select('id').single();
+          feedbackId = fbRow?.id;
+        }
+        await sendMessage(chatId, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY, feedbackId);
+        console.log(`[telegram-poll] replied to ${chatId} (feedback=${feedbackId ?? 'none'})`);
       }
     }
 
