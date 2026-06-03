@@ -249,9 +249,13 @@ function resolveDateFromExtract(ex: Extracted, fallback?: DateRange): DateRange 
 async function loadState(supabase: any, chatId: number): Promise<{ pending: Pending | null; context: ConvContext }> {
   const { data } = await supabase
     .from('telegram_conversation_state')
-    .select('pending, context')
+    .select('pending, context, expires_at')
     .eq('chat_id', chatId)
     .maybeSingle();
+  // Expire memory after 5 minutes
+  if (data?.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
+    return { pending: null, context: {} };
+  }
   return {
     pending: (data?.pending ?? null) as Pending | null,
     context: (data?.context ?? {}) as ConvContext,
@@ -259,11 +263,13 @@ async function loadState(supabase: any, chatId: number): Promise<{ pending: Pend
 }
 
 async function saveState(supabase: any, chatId: number, pending: Pending | null, context: ConvContext) {
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
   await supabase.from('telegram_conversation_state').upsert({
     chat_id: chatId,
     pending,
     context,
     updated_at: new Date().toISOString(),
+    expires_at: expiresAt,
   }, { onConflict: 'chat_id' });
 }
 
