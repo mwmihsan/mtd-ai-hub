@@ -539,6 +539,17 @@ async function answerPending(
     const reply = await runIntent(supabase, { ...pending.original, month: m, year: yr }, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
+  if (pending.type === 'correction_text' && pending.feedback_id && pending.original_query) {
+    // User is providing the correct answer
+    await supabase.from('corrections').insert({
+      original_query: pending.original_query,
+      wrong_result: pending.wrong_result || null,
+      correct_result: text.trim(),
+      usage_count: 0,
+    });
+    await clearPending(supabase, chatId, context);
+    return { reply: `✅ Got it. I'll use that next time for "<b>${pending.original_query}</b>".`, consumed: true };
+  }
   return { reply: '', consumed: false };
 }
 
