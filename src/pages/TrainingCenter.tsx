@@ -17,7 +17,7 @@ type Alias = { id: string; sub_account_name: string; alias: string; created_at: 
 type Intent = { id: string; example_text: string; intent: string; description: string | null; created_at: string };
 type Correction = { id: string; original_query: string; correct_result: string; wrong_result: string | null; usage_count: number; created_at: string };
 type Feedback = { id: string; chat_id: number; query: string | null; response_summary: string | null; rating: string; created_at: string };
-type Memory = { id: string; telegram_chat_id: number; pending_action: string | null; original_query: string | null; selected_account_name: string | null; created_at: string };
+type Memory = { chat_id: number; pending: any; context: any; updated_at: string; expires_at: string };
 
 export default function TrainingCenter() {
   const navigate = useNavigate();
@@ -381,8 +381,8 @@ function MemoryTab() {
     setLoading(true);
     const { data } = await supabase
       .from("telegram_conversation_state")
-      .select("id, telegram_chat_id, pending_action, original_query, selected_account_name, created_at")
-      .order("created_at", { ascending: false })
+      .select("chat_id, pending, context, updated_at, expires_at")
+      .order("updated_at", { ascending: false })
       .limit(100);
     setRows((data as Memory[]) || []);
     setLoading(false);
@@ -390,7 +390,7 @@ function MemoryTab() {
   useEffect(() => { load(); }, []);
 
   async function clearAll() {
-    const { error } = await supabase.from("telegram_conversation_state").delete().neq("id", "00000000-0000-0000-0000-000000000000");
+    const { error } = await supabase.from("telegram_conversation_state").delete().gte("chat_id", -9223372036854775000);
     if (error) return toast.error(error.message);
     toast.success("Memory cleared");
     load();
@@ -405,15 +405,15 @@ function MemoryTab() {
       <CardContent className="overflow-x-auto">
         {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : (
           <Table>
-            <TableHeader><TableRow><TableHead>Chat</TableHead><TableHead>Pending</TableHead><TableHead>Last query</TableHead><TableHead>Selected</TableHead><TableHead>When</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Chat</TableHead><TableHead>Pending</TableHead><TableHead>Context</TableHead><TableHead>Updated</TableHead><TableHead>Expires</TableHead></TableRow></TableHeader>
             <TableBody>
               {rows.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="font-mono text-xs">{r.telegram_chat_id}</TableCell>
-                  <TableCell className="text-xs">{r.pending_action || "—"}</TableCell>
-                  <TableCell className="text-xs">{r.original_query || "—"}</TableCell>
-                  <TableCell className="text-xs">{r.selected_account_name || "—"}</TableCell>
-                  <TableCell className="text-xs">{new Date(r.created_at).toLocaleString()}</TableCell>
+                <TableRow key={r.chat_id}>
+                  <TableCell className="font-mono text-xs">{r.chat_id}</TableCell>
+                  <TableCell className="text-xs"><pre className="whitespace-pre-wrap text-[10px]">{r.pending ? JSON.stringify(r.pending, null, 0) : "—"}</pre></TableCell>
+                  <TableCell className="text-xs"><pre className="whitespace-pre-wrap text-[10px]">{r.context && Object.keys(r.context).length ? JSON.stringify(r.context, null, 0) : "—"}</pre></TableCell>
+                  <TableCell className="text-xs">{new Date(r.updated_at).toLocaleString()}</TableCell>
+                  <TableCell className="text-xs">{new Date(r.expires_at).toLocaleString()}</TableCell>
                 </TableRow>
               ))}
               {rows.length === 0 && <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground">No active sessions</TableCell></TableRow>}
