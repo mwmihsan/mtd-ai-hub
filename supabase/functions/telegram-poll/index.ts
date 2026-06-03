@@ -40,10 +40,13 @@ interface ConvContext {
 }
 
 interface Pending {
-  type: 'customer_select' | 'date_year' | 'date_month';
+  type: 'customer_select' | 'date_year' | 'date_month' | 'correction_text';
   original: Extracted;                   // request to replay after answer
   candidates?: string[];                 // for customer_select
   available_years?: number[];            // for date_year
+  feedback_id?: string;                  // for correction_text
+  original_query?: string;               // for correction_text
+  wrong_result?: string;                 // for correction_text
 }
 
 // ---------- Helpers ----------
@@ -110,6 +113,95 @@ function dateInRange(rowDate: string | null | undefined, range: DateRange): bool
 }
 
 // ---------- AI extraction ----------
+
+// ---------- Training: aliases, intents, corrections ----------
+
+function normalize(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Replace alias tokens in the message with the real sub-account name. */
+async function expandAliases(supabase: any, text: string): Promise<{ text: string; resolved?: string }> {
+  const { data: aliases } = await supabase.from('account_aliases').select('alias, sub_account_name');
+  if (!aliases?.length) return { text };
+  const norm = ' ' + normalize(text) + ' ';
+  let resolved: string | undefined;
+  let out = text;
+  // Longest aliases first to avoid partial overlap
+  const sorted = [...aliases].sort((a: any, b: any) => b.alias.length - a.alias.length);
+  for (const a of sorted) {
+    const al = ' ' + normalize(a.alias) + ' ';
+    if (norm.includes(al)) {
+      const re = new RegExp(`\\b${a.alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      out = out.replace(re, a.sub_account_name);
+      resolved = a.sub_account_name;
+      break;
+    }
+  }
+  return { text: out, resolved };
+}
+
+/** Look up the user's text against trained intent examples. */
+async function lookupTrainedIntent(supabase: any, text: string): Promise<string | null> {
+  const { data: examples } = await supabase.from('intent_training').select('example_text, intent');
+  if (!examples?.length) return null;
+  const target = normalize(text);
+  const targetTokens = new Set(target.split(' ').filter(Boolean));
+  let best: { intent: string; score: number } | null = null;
+  for (const ex of examples) {
+    const exNorm = normalize(ex.example_text);
+    if (target === exNorm) return ex.intent;
+    const exTokens = new Set(exNorm.split(' ').filter(Boolean));
+    let overlap = 0;
+    exTokens.forEach((t) => { if (targetTokens.has(t)) overlap++; });
+    const score = overlap / Math.max(exTokens.size, 1);
+    if (!best || score > best.score) best = { intent: ex.intent, score };
+  }
+  return best && best.score >= 0.75 ? best.intent : null;
+}
+
+/** Look up a previous correction for this query. */
+async function lookupCorrection(supabase: any, text: string): Promise<{ id: string; correct_result: string } | null> {
+  const target = normalize(text);
+  const { data } = await supabase.from('corrections').select('id, original_query, correct_result').limit(500);
+  if (!data?.length) return null;
+  const hit = data.find((c: any) => normalize(c.original_query) === target);
+  if (!hit) return null;
+  // Increment usage_count
+  await supabase.from('corrections')
+    .update({ usage_count: (await supabase.from('corrections').select('usage_count').eq('id', hit.id).single()).data?.usage_count + 1 || 1 })
+    .eq('id', hit.id);
+  return { id: hit.id, correct_result: hit.correct_result };
+}
+
+/** Map a trained intent string to an Extracted shape. */
+function trainedIntentToExtract(intent: string, customer_query: string | null): Extracted {
+  const map: Record<string, IntentKind> = {
+    sales_report: 'sales',
+    purchase_report: 'purchase',
+    expense_report: 'expense',
+    profit_report: 'profit',
+    full_report: 'report',
+    stock_value: 'stock',
+    customer_lookup: 'customer_lookup',
+    help: 'help',
+    reset: 'reset',
+    sales: 'sales',
+    purchase: 'purchase',
+    expense: 'expense',
+    profit: 'profit',
+    report: 'report',
+    stock: 'stock',
+  };
+  return {
+    intent: map[intent] || 'unknown',
+    customer_query,
+    date_text: null,
+    month: null,
+    year: null,
+    confidence: 0.95,
+  };
+}
 
 async function aiExtract(text: string, apiKey: string): Promise<Extracted> {
   try {
@@ -246,9 +338,13 @@ function resolveDateFromExtract(ex: Extracted, fallback?: DateRange): DateRange 
 async function loadState(supabase: any, chatId: number): Promise<{ pending: Pending | null; context: ConvContext }> {
   const { data } = await supabase
     .from('telegram_conversation_state')
-    .select('pending, context')
+    .select('pending, context, expires_at')
     .eq('chat_id', chatId)
     .maybeSingle();
+  // Expire memory after 5 minutes
+  if (data?.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
+    return { pending: null, context: {} };
+  }
   return {
     pending: (data?.pending ?? null) as Pending | null,
     context: (data?.context ?? {}) as ConvContext,
@@ -256,11 +352,13 @@ async function loadState(supabase: any, chatId: number): Promise<{ pending: Pend
 }
 
 async function saveState(supabase: any, chatId: number, pending: Pending | null, context: ConvContext) {
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
   await supabase.from('telegram_conversation_state').upsert({
     chat_id: chatId,
     pending,
     context,
     updated_at: new Date().toISOString(),
+    expires_at: expiresAt,
   }, { onConflict: 'chat_id' });
 }
 
@@ -441,6 +539,17 @@ async function answerPending(
     const reply = await runIntent(supabase, { ...pending.original, month: m, year: yr }, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
+  if (pending.type === 'correction_text' && pending.feedback_id && pending.original_query) {
+    // User is providing the correct answer
+    await supabase.from('corrections').insert({
+      original_query: pending.original_query,
+      wrong_result: pending.wrong_result || null,
+      correct_result: text.trim(),
+      usage_count: 0,
+    });
+    await clearPending(supabase, chatId, context);
+    return { reply: `✅ Got it. I'll use that next time for "<b>${pending.original_query}</b>".`, consumed: true };
+  }
   return { reply: '', consumed: false };
 }
 
@@ -564,7 +673,7 @@ Deno.serve(async (req) => {
         'X-Connection-Api-Key': TELEGRAM_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ offset: currentOffset, timeout, allowed_updates: ['message'] }),
+      body: JSON.stringify({ offset: currentOffset, timeout, allowed_updates: ['message', 'callback_query'] }),
     });
     const data = await response.json();
     if (!response.ok) return new Response(JSON.stringify({ error: data }), { status: 502, headers: corsHeaders });
@@ -586,42 +695,105 @@ Deno.serve(async (req) => {
     }
 
     for (const update of updates) {
+      // Handle feedback buttons
+      if (update.callback_query) {
+        const cb = update.callback_query;
+        const chatId = cb.message?.chat?.id;
+        const data: string = cb.data || '';
+        const [tag, rating, feedbackId] = data.split(':');
+        if (tag === 'fb' && chatId && feedbackId) {
+          // Record rating
+          const { data: fb } = await supabase
+            .from('feedback').select('id, query, response_summary')
+            .eq('id', feedbackId).maybeSingle();
+          await supabase.from('feedback').update({ rating }).eq('id', feedbackId);
+          await answerCallback(cb.id, LOVABLE_API_KEY, TELEGRAM_API_KEY,
+            rating === 'up' ? 'Thanks!' : 'Got it — please tell me the correct answer.');
+          if (rating === 'down' && fb?.query) {
+            const { context } = await loadState(supabase, chatId);
+            await saveState(supabase, chatId, {
+              type: 'correction_text',
+              original: { intent: 'unknown', confidence: 0 },
+              feedback_id: feedbackId,
+              original_query: fb.query,
+              wrong_result: fb.response_summary || '',
+            }, context);
+            await sendMessage(chatId, `📝 What should I have answered for:\n<i>${fb.query}</i>\n\nReply with the correct answer.`, LOVABLE_API_KEY, TELEGRAM_API_KEY);
+          }
+        }
+        continue;
+      }
+
       if (!update.message?.text) continue;
       const chatId = update.message.chat.id;
-      const text = String(update.message.text);
-      console.log(`[telegram-poll] from=${chatId} text="${text}"`);
+      const rawText = String(update.message.text);
+      console.log(`[telegram-poll] from=${chatId} text="${rawText}"`);
 
       const { pending, context } = await loadState(supabase, chatId);
 
-      // 1) If there's a pending clarification, try to answer it
+      // ===== Query pipeline =====
       let reply = '';
+      let feedbackId: string | undefined;
+      let attachFeedback = false;
+
+      // 1) Pending clarification
       if (pending) {
-        const r = await answerPending(supabase, chatId, pending, text, context, settings);
-        if (r.consumed) reply = r.reply;
+        const r = await answerPending(supabase, chatId, pending, rawText, context, settings);
+        if (r.consumed) { reply = r.reply; attachFeedback = pending.type !== 'correction_text'; }
       }
 
-      // 2) Otherwise extract a new intent
       if (!reply) {
-        const lowered = text.trim().toLowerCase();
+        const lowered = rawText.trim().toLowerCase();
         if (lowered === 'reset' || lowered === 'cancel' || lowered === 'new') {
           await saveState(supabase, chatId, null, {});
           reply = `🔄 Conversation context cleared.`;
         } else {
-          const ex = await aiExtract(text, LOVABLE_API_KEY);
-          console.log(`[telegram-poll] extracted`, ex);
-          if (ex.confidence < 0.5 || ex.intent === 'unknown') {
-            reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
-          } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
-            reply = `❓ Which customer or staff did you mean? Please send the name.`;
+          // 2) Corrections
+          const corr = await lookupCorrection(supabase, rawText);
+          if (corr) {
+            reply = `📚 <i>(from training)</i>\n\n${corr.correct_result}`;
+            attachFeedback = true;
           } else {
-            reply = await runIntent(supabase, ex, context, settings, chatId);
+            // 3) Alias expansion
+            const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 4) Trained intent
+            const trainedIntent = await lookupTrainedIntent(supabase, expanded);
+            let ex: Extracted;
+            if (trainedIntent) {
+              ex = trainedIntentToExtract(trainedIntent, resolved ?? null);
+              console.log(`[telegram-poll] trained intent=${trainedIntent}`);
+            } else {
+              // 5) AI extraction
+              ex = await aiExtract(expanded, LOVABLE_API_KEY);
+              if (resolved && !ex.customer_query) ex.customer_query = resolved;
+              console.log(`[telegram-poll] extracted`, ex);
+            }
+
+            if (ex.confidence < 0.5 || ex.intent === 'unknown') {
+              reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+            } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
+              reply = `❓ Which customer or staff did you mean? Please send the name.`;
+            } else {
+              reply = await runIntent(supabase, ex, context, settings, chatId);
+              attachFeedback = true;
+            }
           }
         }
       }
 
       if (reply) {
-        await sendMessage(chatId, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-        console.log(`[telegram-poll] replied to ${chatId}`);
+        // Log feedback row so 👍/👎 callbacks can reference it
+        if (attachFeedback) {
+          const { data: fbRow } = await supabase.from('feedback').insert({
+            chat_id: chatId,
+            query: rawText,
+            response_summary: reply.slice(0, 500),
+            rating: 'up', // default, overwritten on callback
+          }).select('id').single();
+          feedbackId = fbRow?.id;
+        }
+        await sendMessage(chatId, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY, feedbackId);
+        console.log(`[telegram-poll] replied to ${chatId} (feedback=${feedbackId ?? 'none'})`);
       }
     }
 
@@ -633,7 +805,22 @@ Deno.serve(async (req) => {
   return new Response(JSON.stringify({ ok: true, processed: totalProcessed }), { headers: corsHeaders });
 });
 
-async function sendMessage(chatId: number, text: string, lovableKey: string, telegramKey: string) {
+async function sendMessage(
+  chatId: number,
+  text: string,
+  lovableKey: string,
+  telegramKey: string,
+  feedbackId?: string,
+) {
+  const body: any = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (feedbackId) {
+    body.reply_markup = {
+      inline_keyboard: [[
+        { text: '👍 Correct', callback_data: `fb:up:${feedbackId}` },
+        { text: '👎 Wrong',   callback_data: `fb:down:${feedbackId}` },
+      ]],
+    };
+  }
   await fetch(`${GATEWAY_URL}/sendMessage`, {
     method: 'POST',
     headers: {
@@ -641,6 +828,18 @@ async function sendMessage(chatId: number, text: string, lovableKey: string, tel
       'X-Connection-Api-Key': telegramKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    body: JSON.stringify(body),
+  });
+}
+
+async function answerCallback(callbackId: string, lovableKey: string, telegramKey: string, text?: string) {
+  await fetch(`${GATEWAY_URL}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${lovableKey}`,
+      'X-Connection-Api-Key': telegramKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ callback_query_id: callbackId, text: text || '' }),
   });
 }

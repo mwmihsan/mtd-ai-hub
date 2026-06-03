@@ -14,6 +14,27 @@ export type Database = {
   }
   public: {
     Tables: {
+      account_aliases: {
+        Row: {
+          alias: string
+          created_at: string
+          id: string
+          sub_account_name: string
+        }
+        Insert: {
+          alias: string
+          created_at?: string
+          id?: string
+          sub_account_name: string
+        }
+        Update: {
+          alias?: string
+          created_at?: string
+          id?: string
+          sub_account_name?: string
+        }
+        Relationships: []
+      }
       account_rows: {
         Row: {
           account: string | null
@@ -79,6 +100,84 @@ export type Database = {
         }
         Relationships: []
       }
+      corrections: {
+        Row: {
+          correct_result: string
+          created_at: string
+          id: string
+          original_query: string
+          usage_count: number
+          wrong_result: string | null
+        }
+        Insert: {
+          correct_result: string
+          created_at?: string
+          id?: string
+          original_query: string
+          usage_count?: number
+          wrong_result?: string | null
+        }
+        Update: {
+          correct_result?: string
+          created_at?: string
+          id?: string
+          original_query?: string
+          usage_count?: number
+          wrong_result?: string | null
+        }
+        Relationships: []
+      }
+      feedback: {
+        Row: {
+          chat_id: number
+          created_at: string
+          id: string
+          query: string | null
+          rating: string
+          response_summary: string | null
+        }
+        Insert: {
+          chat_id: number
+          created_at?: string
+          id?: string
+          query?: string | null
+          rating: string
+          response_summary?: string | null
+        }
+        Update: {
+          chat_id?: number
+          created_at?: string
+          id?: string
+          query?: string | null
+          rating?: string
+          response_summary?: string | null
+        }
+        Relationships: []
+      }
+      intent_training: {
+        Row: {
+          created_at: string
+          description: string | null
+          example_text: string
+          id: string
+          intent: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          example_text: string
+          id?: string
+          intent: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          example_text?: string
+          id?: string
+          intent?: string
+        }
+        Relationships: []
+      }
       telegram_bot_state: {
         Row: {
           id: number
@@ -101,18 +200,21 @@ export type Database = {
         Row: {
           chat_id: number
           context: Json
+          expires_at: string
           pending: Json | null
           updated_at: string
         }
         Insert: {
           chat_id: number
           context?: Json
+          expires_at?: string
           pending?: Json | null
           updated_at?: string
         }
         Update: {
           chat_id?: number
           context?: Json
+          expires_at?: string
           pending?: Json | null
           updated_at?: string
         }
@@ -196,15 +298,42 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "user"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -331,6 +460,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "user"],
+    },
   },
 } as const
