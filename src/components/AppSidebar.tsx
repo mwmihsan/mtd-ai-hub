@@ -1,6 +1,6 @@
 import { NavLink as RouterNavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Bot, Sun, Moon, LayoutDashboard, Shield, MessageCircle } from "lucide-react";
+import { Sun, Moon, LayoutDashboard, Shield, MessageCircle, GraduationCap } from "lucide-react";
 import { useState, useEffect } from "react";
 
 export function AppSidebar() {
@@ -17,10 +17,9 @@ export function AppSidebar() {
   }, [dark]);
 
   const links = [
-    { to: "/", label: "Dashboard", icon: LayoutDashboard },
-    { to: "/agent", label: "Accounts Agent", icon: Bot },
     { to: "/admin", label: "Admin Panel", icon: Shield },
     { to: "/telegram", label: "Telegram Bot", icon: MessageCircle },
+    { to: "/training", label: "Training Center", icon: GraduationCap },
   ];
 
   return (
