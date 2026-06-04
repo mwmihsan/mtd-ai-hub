@@ -281,26 +281,67 @@ Do NOT guess a year or month that was not mentioned. Use null for missing values
 
 // ---------- Customer resolution ----------
 
-async function findCustomerCandidates(supabase: any, query: string): Promise<string[]> {
+async function findCustomerCandidates(
+  supabase: any,
+  query: string,
+): Promise<Array<{ account_id: string | null; name: string }>> {
   const q = query.trim();
   if (!q) return [];
-  // Exact match (case-insensitive)
+
+  // 1) Exact match in accounts_master (normalized)
+  const norm = q.toUpperCase().replace(/\s+/g, ' ');
   const { data: exact } = await supabase
-    .from('account_rows')
-    .select('sub_account')
-    .ilike('sub_account', q);
-  const exactNames = Array.from(new Set((exact ?? []).map((r: any) => r.sub_account).filter(Boolean)));
-  if (exactNames.length === 1) return exactNames as string[];
+    .from('accounts_master')
+    .select('account_id, account_name')
+    .eq('normalized_name', norm);
+  if (exact && exact.length === 1) {
+    return [{ account_id: exact[0].account_id, name: exact[0].account_name }];
+  }
 
-  // Partial match
+  // 2) Alias exact match
+  const { data: aliasHit } = await supabase
+    .from('account_aliases')
+    .select('account_id, sub_account_name')
+    .ilike('alias', q);
+  const aliasIds = (aliasHit ?? []).map((a: any) => a.account_id).filter(Boolean);
+  if (aliasIds.length) {
+    const { data: aliasAccts } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .in('account_id', aliasIds);
+    if (aliasAccts?.length === 1) {
+      return [{ account_id: aliasAccts[0].account_id, name: aliasAccts[0].account_name }];
+    }
+    if (aliasAccts?.length) {
+      return aliasAccts.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+    }
+  }
+
+  // 3) Partial match in accounts_master
   const { data: partial } = await supabase
-    .from('account_rows')
-    .select('sub_account')
-    .ilike('sub_account', `%${q}%`);
-  const names = Array.from(new Set((partial ?? []).map((r: any) => r.sub_account).filter(Boolean))) as string[];
+    .from('accounts_master')
+    .select('account_id, account_name')
+    .ilike('account_name', `%${q}%`)
+    .limit(20);
+  if (partial?.length) {
+    return partial.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
 
-  if (exactNames.length > 1) return exactNames as string[];
-  return names;
+  // 4) Fallback: legacy sub_account scan
+  const { data: legacy } = await supabase
+    .from('account_rows')
+    .select('sub_account, account_id')
+    .ilike('sub_account', `%${q}%`)
+    .limit(50);
+  const seen = new Set<string>();
+  const out: Array<{ account_id: string | null; name: string }> = [];
+  for (const r of legacy ?? []) {
+    const key = (r.sub_account || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ account_id: r.account_id ?? null, name: r.sub_account });
+  }
+  return out;
 }
 
 // ---------- Date resolution ----------
