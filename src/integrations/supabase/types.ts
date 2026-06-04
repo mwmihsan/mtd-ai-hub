@@ -16,18 +16,21 @@ export type Database = {
     Tables: {
       account_aliases: {
         Row: {
+          account_id: string | null
           alias: string
           created_at: string
           id: string
           sub_account_name: string
         }
         Insert: {
+          account_id?: string | null
           alias: string
           created_at?: string
           id?: string
           sub_account_name: string
         }
         Update: {
+          account_id?: string | null
           alias?: string
           created_at?: string
           id?: string
@@ -38,6 +41,7 @@ export type Database = {
       account_rows: {
         Row: {
           account: string | null
+          account_id: string | null
           credit: number
           date: string | null
           debit: number
@@ -48,6 +52,7 @@ export type Database = {
         }
         Insert: {
           account?: string | null
+          account_id?: string | null
           credit?: number
           date?: string | null
           debit?: number
@@ -58,6 +63,7 @@ export type Database = {
         }
         Update: {
           account?: string | null
+          account_id?: string | null
           credit?: number
           date?: string | null
           debit?: number
@@ -75,6 +81,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      accounts_master: {
+        Row: {
+          account_id: string
+          account_name: string
+          account_type: string | null
+          created_at: string
+          mobile: string | null
+          normalized_name: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          account_id: string
+          account_name: string
+          account_type?: string | null
+          created_at?: string
+          mobile?: string | null
+          normalized_name: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          account_id?: string
+          account_name?: string
+          account_type?: string | null
+          created_at?: string
+          mobile?: string | null
+          normalized_name?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       chat_messages: {
         Row: {
@@ -175,6 +214,30 @@ export type Database = {
           example_text?: string
           id?: string
           intent?: string
+        }
+        Relationships: []
+      }
+      report_templates: {
+        Row: {
+          created_at: string
+          default_filters: Json
+          id: string
+          intent: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          default_filters?: Json
+          id?: string
+          intent: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          default_filters?: Json
+          id?: string
+          intent?: string
+          name?: string
         }
         Relationships: []
       }
@@ -332,6 +395,8 @@ export type Database = {
         }
         Returns: boolean
       }
+      next_account_id: { Args: never; Returns: string }
+      resolve_or_create_account: { Args: { _name: string }; Returns: string }
     }
     Enums: {
       app_role: "admin" | "user"

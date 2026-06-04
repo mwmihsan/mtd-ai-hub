@@ -35,14 +35,14 @@ interface Extracted {
 }
 
 interface ConvContext {
-  customer?: { name: string };           // resolved sub_account
+  customer?: { name: string; account_id?: string };
   date?: DateRange;
 }
 
 interface Pending {
   type: 'customer_select' | 'date_year' | 'date_month' | 'correction_text';
   original: Extracted;                   // request to replay after answer
-  candidates?: string[];                 // for customer_select
+  candidates?: Array<{ account_id: string | null; name: string }>;
   available_years?: number[];            // for date_year
   feedback_id?: string;                  // for correction_text
   original_query?: string;               // for correction_text
@@ -281,26 +281,67 @@ Do NOT guess a year or month that was not mentioned. Use null for missing values
 
 // ---------- Customer resolution ----------
 
-async function findCustomerCandidates(supabase: any, query: string): Promise<string[]> {
+async function findCustomerCandidates(
+  supabase: any,
+  query: string,
+): Promise<Array<{ account_id: string | null; name: string }>> {
   const q = query.trim();
   if (!q) return [];
-  // Exact match (case-insensitive)
+
+  // 1) Exact match in accounts_master (normalized)
+  const norm = q.toUpperCase().replace(/\s+/g, ' ');
   const { data: exact } = await supabase
-    .from('account_rows')
-    .select('sub_account')
-    .ilike('sub_account', q);
-  const exactNames = Array.from(new Set((exact ?? []).map((r: any) => r.sub_account).filter(Boolean)));
-  if (exactNames.length === 1) return exactNames as string[];
+    .from('accounts_master')
+    .select('account_id, account_name')
+    .eq('normalized_name', norm);
+  if (exact && exact.length === 1) {
+    return [{ account_id: exact[0].account_id, name: exact[0].account_name }];
+  }
 
-  // Partial match
+  // 2) Alias exact match
+  const { data: aliasHit } = await supabase
+    .from('account_aliases')
+    .select('account_id, sub_account_name')
+    .ilike('alias', q);
+  const aliasIds = (aliasHit ?? []).map((a: any) => a.account_id).filter(Boolean);
+  if (aliasIds.length) {
+    const { data: aliasAccts } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .in('account_id', aliasIds);
+    if (aliasAccts?.length === 1) {
+      return [{ account_id: aliasAccts[0].account_id, name: aliasAccts[0].account_name }];
+    }
+    if (aliasAccts?.length) {
+      return aliasAccts.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+    }
+  }
+
+  // 3) Partial match in accounts_master
   const { data: partial } = await supabase
-    .from('account_rows')
-    .select('sub_account')
-    .ilike('sub_account', `%${q}%`);
-  const names = Array.from(new Set((partial ?? []).map((r: any) => r.sub_account).filter(Boolean))) as string[];
+    .from('accounts_master')
+    .select('account_id, account_name')
+    .ilike('account_name', `%${q}%`)
+    .limit(20);
+  if (partial?.length) {
+    return partial.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
 
-  if (exactNames.length > 1) return exactNames as string[];
-  return names;
+  // 4) Fallback: legacy sub_account scan
+  const { data: legacy } = await supabase
+    .from('account_rows')
+    .select('sub_account, account_id')
+    .ilike('sub_account', `%${q}%`)
+    .limit(50);
+  const seen = new Set<string>();
+  const out: Array<{ account_id: string | null; name: string }> = [];
+  for (const r of legacy ?? []) {
+    const key = (r.sub_account || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ account_id: r.account_id ?? null, name: r.sub_account });
+  }
+  return out;
 }
 
 // ---------- Date resolution ----------
@@ -375,11 +416,20 @@ function filtersHeader(ctx: { customer?: string; date?: DateRange; report: strin
     `  • Report type: ${ctx.report}\n\n`;
 }
 
+function customerLabel(c?: { name: string; account_id?: string }): string | undefined {
+  if (!c) return undefined;
+  return c.account_id ? `${c.name} (${c.account_id})` : c.name;
+}
+
 // ---------- Handlers ----------
 
-async function fetchRows(supabase: any, opts: { customer?: string; accountLike?: string }) {
-  let q = supabase.from('account_rows').select('credit, debit, account, sub_account, date, description');
-  if (opts.customer) q = q.eq('sub_account', opts.customer);
+async function fetchRows(supabase: any, opts: { customer?: string; account_id?: string; accountLike?: string }) {
+  let q = supabase.from('account_rows').select('credit, debit, account, sub_account, date, description, account_id');
+  if (opts.account_id) {
+    q = q.eq('account_id', opts.account_id);
+  } else if (opts.customer) {
+    q = q.eq('sub_account', opts.customer);
+  }
   if (opts.accountLike) q = q.ilike('account', `%${opts.accountLike}%`);
   const { data } = await q;
   return data ?? [];
@@ -399,13 +449,13 @@ async function handleTotalsCommand(
     kind === 'sales' ? 'sale' : kind === 'purchase' ? 'purchase' : 'expense';
   const field: 'credit' | 'debit' = kind === 'sales' ? 'credit' : 'debit';
   const rows = applyDateFilter(
-    await fetchRows(supabase, { customer: ctx.customer?.name, accountLike }),
+    await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id, accountLike }),
     ctx.date ?? { kind: 'all', label: 'All time' },
   );
   const total = rows.reduce((s, r) => s + Number(r[field] || 0), 0);
   const label = kind === 'sales' ? '💰 Sales' : kind === 'purchase' ? '🛒 Purchase' : '💸 Expense';
   const header = filtersHeader({
-    customer: ctx.customer?.name,
+    customer: customerLabel(ctx.customer),
     date: ctx.date,
     report: kind[0].toUpperCase() + kind.slice(1),
   });
@@ -428,14 +478,14 @@ async function handleTotalsCommand(
 
 async function handleProfit(supabase: any, ctx: ConvContext, settings: any): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name }), range);
+  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id }), range);
   const sales = all.filter((r) => /sale/i.test(r.account || '')).reduce((s, r) => s + Number(r.credit || 0), 0);
   const purchase = all.filter((r) => /purchase/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
   const expense = all.filter((r) => /expense/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
   const gross = sales - purchase;
   const stockValue = Number(settings?.stock_value || 0);
 
-  let reply = filtersHeader({ customer: ctx.customer?.name, date: ctx.date, report: 'Profit' });
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Profit' });
   reply += `Total Sales: ${fmt(sales)}\nTotal Purchase: ${fmt(purchase)}\n<b>Gross Profit: ${fmt(gross)}</b>\n`;
   if (stockValue > 0 && !ctx.customer && range.kind === 'all') {
     reply += `\nStock Value: ${fmt(stockValue)}\nTotal Expense: ${fmt(expense)}\n<b>Net Profit: ${fmt(gross + stockValue - expense)}</b>`;
@@ -448,7 +498,7 @@ async function handleProfit(supabase: any, ctx: ConvContext, settings: any): Pro
 
 async function handleReport(supabase: any, ctx: ConvContext, settings: any): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name }), range);
+  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id }), range);
   const sales = all.filter((r) => /sale/i.test(r.account || '')).reduce((s, r) => s + Number(r.credit || 0), 0);
   const purchase = all.filter((r) => /purchase/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
   const expense = all.filter((r) => /expense/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
@@ -456,7 +506,7 @@ async function handleReport(supabase: any, ctx: ConvContext, settings: any): Pro
   const gross = sales - purchase;
   const stockValue = Number(settings?.stock_value || 0);
 
-  let reply = filtersHeader({ customer: ctx.customer?.name, date: ctx.date, report: 'Full Report' });
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Full Report' });
   reply += `💰 Sales: ${fmt(sales)}\n🛒 Purchase: ${fmt(purchase)}\n💸 Expenses: ${fmt(expense)}\n👷 Staff/Workers: ${fmt(staff)}\n\n<b>Gross Profit: ${fmt(gross)}</b>\n`;
   if (stockValue > 0 && !ctx.customer && range.kind === 'all') {
     reply += `📦 Stock Value: ${fmt(stockValue)}\n<b>Net Profit: ${fmt(gross + stockValue - expense)}</b>`;
@@ -468,13 +518,13 @@ async function handleReport(supabase: any, ctx: ConvContext, settings: any): Pro
 
 async function handleCustomerSummary(supabase: any, ctx: ConvContext): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const rows = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer!.name }), range);
+  const rows = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer!.name, account_id: ctx.customer!.account_id }), range);
   const debit = rows.reduce((s, r) => s + Number(r.debit || 0), 0);
   const credit = rows.reduce((s, r) => s + Number(r.credit || 0), 0);
   const account = rows[0]?.account || 'Unknown';
 
-  let reply = filtersHeader({ customer: ctx.customer!.name, date: ctx.date, report: 'Customer Summary' });
-  reply += `👤 <b>${ctx.customer!.name}</b> (${account})\n`;
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Customer Summary' });
+  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''} (${account})\n`;
   reply += `💳 Total Debit: ${fmt(debit)}\n💰 Total Credit: ${fmt(credit)}\n📊 ${rows.length} transaction(s)\n`;
   const recent = rows.slice(-5);
   if (recent.length) {
@@ -511,15 +561,20 @@ async function answerPending(
   const t = text.trim();
   if (pending.type === 'customer_select' && pending.candidates) {
     const idx = parseInt(t, 10);
-    let chosen: string | undefined;
+    let chosen: { account_id: string | null; name: string } | undefined;
     if (!isNaN(idx) && idx >= 1 && idx <= pending.candidates.length) {
       chosen = pending.candidates[idx - 1];
     } else {
-      // Try exact name match within candidates
-      chosen = pending.candidates.find((c) => c.toLowerCase() === t.toLowerCase());
+      // Try exact name or ACC ID match within candidates
+      chosen = pending.candidates.find(
+        (c) => c.name.toLowerCase() === t.toLowerCase() || c.account_id === t.toUpperCase(),
+      );
     }
     if (!chosen) return { reply: '', consumed: false };
-    const newCtx: ConvContext = { ...context, customer: { name: chosen } };
+    const newCtx: ConvContext = {
+      ...context,
+      customer: { name: chosen.name, account_id: chosen.account_id ?? undefined },
+    };
     const reply = await runIntent(supabase, pending.original, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
@@ -595,9 +650,12 @@ async function runIntent(
         original: ex,
         candidates: cands,
       }, context);
-      return `🔎 Multiple accounts found for "<b>${ex.customer_query}</b>":\n\n${cands.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}\n\nReply with the number or full name.`;
+      const list = cands
+        .map((c, i) => `  ${i + 1}. <code>${c.account_id ?? '----'}</code> — ${c.name}`)
+        .join('\n');
+      return `🔎 Multiple accounts found for "<b>${ex.customer_query}</b>":\n\n${list}\n\nReply with the number, full name, or Account ID.`;
     }
-    context.customer = { name: cands[0] };
+    context.customer = { name: cands[0].name, account_id: cands[0].account_id ?? undefined };
   }
 
   await clearPending(supabase, chatId, context);
