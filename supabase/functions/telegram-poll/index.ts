@@ -444,7 +444,7 @@ async function handleTotalsCommand(
     kind === 'sales' ? 'sale' : kind === 'purchase' ? 'purchase' : 'expense';
   const field: 'credit' | 'debit' = kind === 'sales' ? 'credit' : 'debit';
   const rows = applyDateFilter(
-    await fetchRows(supabase, { customer: ctx.customer?.name, accountLike }),
+    await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id, accountLike }),
     ctx.date ?? { kind: 'all', label: 'All time' },
   );
   const total = rows.reduce((s, r) => s + Number(r[field] || 0), 0);
@@ -473,7 +473,7 @@ async function handleTotalsCommand(
 
 async function handleProfit(supabase: any, ctx: ConvContext, settings: any): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name }), range);
+  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id }), range);
   const sales = all.filter((r) => /sale/i.test(r.account || '')).reduce((s, r) => s + Number(r.credit || 0), 0);
   const purchase = all.filter((r) => /purchase/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
   const expense = all.filter((r) => /expense/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
@@ -493,7 +493,7 @@ async function handleProfit(supabase: any, ctx: ConvContext, settings: any): Pro
 
 async function handleReport(supabase: any, ctx: ConvContext, settings: any): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name }), range);
+  const all = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer?.name, account_id: ctx.customer?.account_id }), range);
   const sales = all.filter((r) => /sale/i.test(r.account || '')).reduce((s, r) => s + Number(r.credit || 0), 0);
   const purchase = all.filter((r) => /purchase/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
   const expense = all.filter((r) => /expense/i.test(r.account || '')).reduce((s, r) => s + Number(r.debit || 0), 0);
@@ -513,13 +513,16 @@ async function handleReport(supabase: any, ctx: ConvContext, settings: any): Pro
 
 async function handleCustomerSummary(supabase: any, ctx: ConvContext): Promise<string> {
   const range = ctx.date ?? { kind: 'all', label: 'All time' };
-  const rows = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer!.name }), range);
+  const rows = applyDateFilter(await fetchRows(supabase, { customer: ctx.customer!.name, account_id: ctx.customer!.account_id }), range);
   const debit = rows.reduce((s, r) => s + Number(r.debit || 0), 0);
   const credit = rows.reduce((s, r) => s + Number(r.credit || 0), 0);
   const account = rows[0]?.account || 'Unknown';
 
-  let reply = filtersHeader({ customer: ctx.customer!.name, date: ctx.date, report: 'Customer Summary' });
-  reply += `👤 <b>${ctx.customer!.name}</b> (${account})\n`;
+  const customerLabel = ctx.customer!.account_id
+    ? `${ctx.customer!.name} (${ctx.customer!.account_id})`
+    : ctx.customer!.name;
+  let reply = filtersHeader({ customer: customerLabel, date: ctx.date, report: 'Customer Summary' });
+  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''} (${account})\n`;
   reply += `💳 Total Debit: ${fmt(debit)}\n💰 Total Credit: ${fmt(credit)}\n📊 ${rows.length} transaction(s)\n`;
   const recent = rows.slice(-5);
   if (recent.length) {
