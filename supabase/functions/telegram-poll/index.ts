@@ -35,14 +35,14 @@ interface Extracted {
 }
 
 interface ConvContext {
-  customer?: { name: string };           // resolved sub_account
+  customer?: { name: string; account_id?: string };
   date?: DateRange;
 }
 
 interface Pending {
   type: 'customer_select' | 'date_year' | 'date_month' | 'correction_text';
   original: Extracted;                   // request to replay after answer
-  candidates?: string[];                 // for customer_select
+  candidates?: Array<{ account_id: string | null; name: string }>;
   available_years?: number[];            // for date_year
   feedback_id?: string;                  // for correction_text
   original_query?: string;               // for correction_text
