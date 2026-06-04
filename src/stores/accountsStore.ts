@@ -143,9 +143,22 @@ export const useAccountsStore = create<AccountsStore>((set, get) => ({
 
       console.log('[AccountsStore] First mapped DB row:', rows[0]);
 
+      // Resolve a permanent Account ID for each unique sub_account
+      const uniqueSubs = Array.from(new Set(rows.map((r) => r.sub_account).filter(Boolean)));
+      const idMap: Record<string, string> = {};
+      for (const name of uniqueSubs) {
+        const { data: aid, error: rpcErr } = await supabase.rpc('resolve_or_create_account', { _name: name });
+        if (rpcErr) {
+          console.error('[AccountsStore] resolve_or_create_account error', name, rpcErr);
+          continue;
+        }
+        if (aid) idMap[name] = aid as string;
+      }
+      const stampedRows = rows.map((r) => ({ ...r, account_id: idMap[r.sub_account] ?? null }));
+
       // Insert in batches of 500
-      for (let i = 0; i < rows.length; i += 500) {
-        const batch = rows.slice(i, i + 500);
+      for (let i = 0; i < stampedRows.length; i += 500) {
+        const batch = stampedRows.slice(i, i + 500);
         const { error: rowError } = await supabase
           .from('account_rows')
           .insert(batch);
