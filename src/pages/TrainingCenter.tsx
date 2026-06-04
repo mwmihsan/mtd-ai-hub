@@ -18,6 +18,7 @@ type Intent = { id: string; example_text: string; intent: string; description: s
 type Correction = { id: string; original_query: string; correct_result: string; wrong_result: string | null; usage_count: number; created_at: string };
 type Feedback = { id: string; chat_id: number; query: string | null; response_summary: string | null; rating: string; created_at: string };
 type Memory = { chat_id: number; pending: any; context: any; updated_at: string; expires_at: string };
+type Account = { account_id: string; account_name: string; account_type: string | null; mobile: string | null; status: string; created_at: string };
 
 export default function TrainingCenter() {
   const navigate = useNavigate();
@@ -116,6 +117,7 @@ export default function TrainingCenter() {
 
         <Tabs defaultValue="aliases" className="w-full">
           <TabsList className="w-full justify-start overflow-x-auto">
+            <TabsTrigger value="accounts">Accounts</TabsTrigger>
             <TabsTrigger value="aliases">Aliases</TabsTrigger>
             <TabsTrigger value="intents">Intents</TabsTrigger>
             <TabsTrigger value="corrections">Corrections</TabsTrigger>
@@ -123,6 +125,7 @@ export default function TrainingCenter() {
             <TabsTrigger value="memory">Memory</TabsTrigger>
           </TabsList>
 
+          <TabsContent value="accounts"><AccountsTab /></TabsContent>
           <TabsContent value="aliases"><AliasesTab /></TabsContent>
           <TabsContent value="intents"><IntentsTab /></TabsContent>
           <TabsContent value="corrections"><CorrectionsTab /></TabsContent>
