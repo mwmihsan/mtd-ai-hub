@@ -455,7 +455,7 @@ async function handleTotalsCommand(
   const total = rows.reduce((s, r) => s + Number(r[field] || 0), 0);
   const label = kind === 'sales' ? '💰 Sales' : kind === 'purchase' ? '🛒 Purchase' : '💸 Expense';
   const header = filtersHeader({
-    customer: ctx.customer?.name,
+    customer: customerLabel(ctx.customer),
     date: ctx.date,
     report: kind[0].toUpperCase() + kind.slice(1),
   });
@@ -485,7 +485,7 @@ async function handleProfit(supabase: any, ctx: ConvContext, settings: any): Pro
   const gross = sales - purchase;
   const stockValue = Number(settings?.stock_value || 0);
 
-  let reply = filtersHeader({ customer: ctx.customer?.name, date: ctx.date, report: 'Profit' });
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Profit' });
   reply += `Total Sales: ${fmt(sales)}\nTotal Purchase: ${fmt(purchase)}\n<b>Gross Profit: ${fmt(gross)}</b>\n`;
   if (stockValue > 0 && !ctx.customer && range.kind === 'all') {
     reply += `\nStock Value: ${fmt(stockValue)}\nTotal Expense: ${fmt(expense)}\n<b>Net Profit: ${fmt(gross + stockValue - expense)}</b>`;
@@ -506,7 +506,7 @@ async function handleReport(supabase: any, ctx: ConvContext, settings: any): Pro
   const gross = sales - purchase;
   const stockValue = Number(settings?.stock_value || 0);
 
-  let reply = filtersHeader({ customer: ctx.customer?.name, date: ctx.date, report: 'Full Report' });
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Full Report' });
   reply += `💰 Sales: ${fmt(sales)}\n🛒 Purchase: ${fmt(purchase)}\n💸 Expenses: ${fmt(expense)}\n👷 Staff/Workers: ${fmt(staff)}\n\n<b>Gross Profit: ${fmt(gross)}</b>\n`;
   if (stockValue > 0 && !ctx.customer && range.kind === 'all') {
     reply += `📦 Stock Value: ${fmt(stockValue)}\n<b>Net Profit: ${fmt(gross + stockValue - expense)}</b>`;
