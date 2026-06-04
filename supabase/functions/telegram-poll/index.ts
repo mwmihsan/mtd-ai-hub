@@ -523,10 +523,7 @@ async function handleCustomerSummary(supabase: any, ctx: ConvContext): Promise<s
   const credit = rows.reduce((s, r) => s + Number(r.credit || 0), 0);
   const account = rows[0]?.account || 'Unknown';
 
-  const customerLabel = ctx.customer!.account_id
-    ? `${ctx.customer!.name} (${ctx.customer!.account_id})`
-    : ctx.customer!.name;
-  let reply = filtersHeader({ customer: customerLabel, date: ctx.date, report: 'Customer Summary' });
+  let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Customer Summary' });
   reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''} (${account})\n`;
   reply += `💳 Total Debit: ${fmt(debit)}\n💰 Total Credit: ${fmt(credit)}\n📊 ${rows.length} transaction(s)\n`;
   const recent = rows.slice(-5);
