@@ -416,6 +416,11 @@ function filtersHeader(ctx: { customer?: string; date?: DateRange; report: strin
     `  • Report type: ${ctx.report}\n\n`;
 }
 
+function customerLabel(c?: { name: string; account_id?: string }): string | undefined {
+  if (!c) return undefined;
+  return c.account_id ? `${c.name} (${c.account_id})` : c.name;
+}
+
 // ---------- Handlers ----------
 
 async function fetchRows(supabase: any, opts: { customer?: string; account_id?: string; accountLike?: string }) {
