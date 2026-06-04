@@ -438,3 +438,101 @@ function MemoryTab() {
     </Card>
   );
 }
+
+/* ---------------- Accounts Master ---------------- */
+function AccountsTab() {
+  const [rows, setRows] = useState<Account[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("accounts_master")
+      .select("*")
+      .order("account_id", { ascending: true });
+    setRows((data as Account[]) || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  async function updateField(id: string, patch: Partial<Account>) {
+    const { error } = await supabase.from("accounts_master").update(patch).eq("account_id", id);
+    if (error) return toast.error(error.message);
+    load();
+  }
+
+  const filtered = rows.filter((r) => {
+    if (!q.trim()) return true;
+    const needle = q.toLowerCase();
+    return r.account_id.toLowerCase().includes(needle) || r.account_name.toLowerCase().includes(needle);
+  });
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle className="text-sm">Accounts Master</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search by ID or name..."
+          className="mb-3"
+        />
+        <div className="overflow-x-auto">
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Account ID</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Mobile</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((r) => (
+                  <TableRow key={r.account_id}>
+                    <TableCell className="font-mono text-xs">{r.account_id}</TableCell>
+                    <TableCell>{r.account_name}</TableCell>
+                    <TableCell>
+                      <Input
+                        defaultValue={r.account_type ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim() || null;
+                          if (v !== (r.account_type ?? null)) updateField(r.account_id, { account_type: v });
+                        }}
+                        className="h-8"
+                        placeholder="customer / supplier / expense..."
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        defaultValue={r.mobile ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim() || null;
+                          if (v !== (r.mobile ?? null)) updateField(r.account_id, { mobile: v });
+                        }}
+                        className="h-8"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={r.status === "active" ? "default" : "secondary"}>{r.status}</Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {filtered.length === 0 && (
+                  <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                    {q ? "No matches" : "No accounts yet — upload a file to populate"}
+                  </TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
