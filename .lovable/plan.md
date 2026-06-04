@@ -1,76 +1,125 @@
-# AI Training Center — Build Plan
+# Advanced Accounting AI Agent — Build Plan
 
-A staged build for the Telegram bot's learning system. Each module is independent so we can ship incrementally and add future channels (WhatsApp, voice, OCR) later without rework.
+Extends the existing Phase 1/2 Training Center into a full accounting agent. Adds a permanent Account ID system, deterministic SQL-based calculations, PDF/chart reports, and richer admin tools.
 
 ## What you'll get
 
-1. **Conversation Memory** — bot remembers your last question and your choice when it asks "which account?". Auto-expires after 5 minutes.
-2. **Account Aliases** — teach the bot nicknames (e.g. `mnm` → `M.N.M NISRAN`).
-3. **Intent Training** — feed it example phrases ("april sales", "monthly profit") and map them to actions, so it stops guessing.
-4. **Corrections** — when bot answers wrong, mark 👎, tell it the right answer, and it learns.
-5. **Feedback buttons** — every bot reply ends with 👍 / 👎.
-6. **Training Dashboard** — one admin page with tabs for everything above plus analytics (top queries, accuracy %, failed searches).
-7. **Smart Matching** — strict priority: Account ID → Exact name → Alias → Partial → AI similarity. Never auto-pick when multiple matches.
-8. **Accuracy rules** — never guess customer/year, always show "Applied Filters" header, confidence threshold before querying.
+1. **Permanent Account IDs** (`ACC0001`…) auto-assigned on import; every transaction is linked by ID, never by name.
+2. **Disambiguation by ID** — when multiple accounts share a similar name, bot lists them with IDs and asks you to pick.
+3. **Strict pipeline** — Memory → Alias → Intent training → AI (intent + dates + account only) → DB query → formatted reply → feedback log.
+4. **Date parser** — handles `today`, `last week`, `april`, `2025 april`, `between jan and march`; asks for the year when ambiguous.
+5. **All reports**: monthly sales / purchases / expenses, customer & supplier balances, account statement, debit/credit totals, profit, monthly comparison, ledger.
+6. **PDF reports** with filters, summary, transactions, totals + chart images (bar/line/pie) sent directly to Telegram.
+7. **Admin dashboard** expansion: Accounts Master, Aliases, Intents, Corrections, Memory, Feedback Analytics, Report Templates.
+8. **Accuracy guards** — never guess year/account; confidence < 90% asks; all maths from DB.
 
-## Build order (suggested phases)
+---
 
-**Phase 1 — Foundation (DB + Pipeline rewrite)**
+## Phase A — Account ID foundation (DB + import)
 
-- New tables: `account_aliases`, `intent_training`, `corrections`, `feedback`. Reuse existing `telegram_conversation_state` for memory (add expiry).
-- Rewrite `telegram-poll` query pipeline to run in order: Memory → Corrections → Aliases → Intent training → AI → Query → Reply with feedback buttons → Log learning data.
-- Add Smart Matching service with the 5-level priority.
+**New tables**
 
-**Phase 2 — Admin Training Center page (`/training`)**
-Tabs:
+- `accounts_master(account_id text PK ACC####, account_name, account_type, mobile, status, created_at)`
+- Extend `account_aliases` with `account_id` (keep old `sub_account_name` for back-compat, populate during migration)
+- Extend `account_rows` with `account_id text` (nullable, indexed)
+- Sequence + function `next_account_id()` → `ACC0001`…
+- Function `resolve_or_create_account(name)` → returns `account_id` (matches by exact name → alias → fuzzy; creates new if none)
+- Backfill: walk existing `account_rows`, assign IDs, populate `accounts_master`
 
-- Conversation Memory (view/clear active sessions)
-- Account Aliases (CRUD, linked to sub_account name)
-- Intent Training (CRUD + "Test" box to try a phrase)
-- Corrections (list, usage_count, delete)
-- Feedback Analytics (totals, top corrected queries, accuracy %, failed searches)
+**Import flow update**
+On Excel upload, for each unique `sub_account`, call `resolve_or_create_account` and stamp `account_id` on every row.
 
-**Phase 3 — Feedback loop in Telegram**
+## Phase B — Pipeline rewrite (`telegram-poll`)
 
-- Inline keyboard 👍/👎 on every report.
-- 👎 prompts: "What should I have selected?" → saves correction.
-- callback_query handler in `telegram-poll`.
+8-step pipeline as specified. AI (Gemini via Lovable AI) extracts **only**:
+
+```
+{ intent, accountQuery, startDate, endDate, reportType, confidence }
+```
+
+Account resolution returns `{match}` or `{candidates: [{account_id, account_name}]}`. If candidates, store pending action and reply:
+
+```
+Multiple accounts found:
+1. ACC0001 - M.N.M NISRAN
+2. ACC0002 - NISRAN
+Reply 1 or 2.
+```
+
+User's numeric reply resumes the original query from `conversation_state.original_query` with the chosen `account_id`.
+
+**Date parser** as a pure helper (`parseDateRange(text, now)`); returns `{start, end}` or `{askYear: true}`.
+
+**Reports** are pure SQL functions keyed by `report_type`:
+- `account_statement(account_id, start, end)`
+- `monthly_sales(account_id?, start, end)`
+- `monthly_purchases`, `monthly_expenses`
+- `customer_balance(account_id)` → `SUM(debit) - SUM(credit)`
+- `supplier_balance(account_id)` → `SUM(credit) - SUM(debit)`
+- `profit(start, end)` → `sales - purchases - expenses`
+- `monthly_comparison(months[])`
+- `ledger(account_id, start, end)`
+
+All replies use the standard header:
+
+```
+Applied Filters:
+Account: M.N.M NISRAN (ACC0001)
+Date Range: 01-Apr-2025 to 30-Apr-2025
+Report: Account Statement
+
+Results: …
+```
+
+Each reply ends with 👍/👎 inline buttons (existing feedback flow).
+
+## Phase C — PDF & charts
+
+Edge function helper `buildReportPdf(report, filters)` using `pdf-lib` (Deno-compatible) generating: title, filters block, summary, transactions table, totals, optional chart image. Charts rendered server-side via `quickchart.io` URL (no extra deps) embedded as PNG. PDF sent via Telegram `sendDocument`; chart-only requests via `sendPhoto`.
+
+Triggers: keywords `pdf`, `statement pdf`, `chart`, `chart pdf` in the user message (also stored as intents).
+
+## Phase D — Admin dashboard expansion
+
+Extend `/training` with new tabs:
+
+- **Accounts Master** — list `accounts_master` with ID, name, type, mobile, status; inline edit; merge tool stays disabled (per "never merge").
+- **Report Templates** — saved canned queries that map to `report_type` + default filters.
+- **Feedback Analytics** — top queries, accuracy %, failed-search list, most-corrected queries.
+- Existing tabs (Aliases, Intents, Corrections, Memory) get an `account_id` column where relevant.
 
 ## Technical details
 
-**Tables (new)**
+**New migrations**
+- `accounts_master`, `next_account_id()`, `resolve_or_create_account()` (SECURITY DEFINER, locked search_path)
+- ALTER `account_aliases ADD account_id text` + index
+- ALTER `account_rows ADD account_id text` + index + backfill
+- `report_templates(id, name, intent, default_filters jsonb, created_at)`
+- All new tables: GRANTs + RLS (admin write, public read where bot needs it)
 
-- `account_aliases(id, sub_account_name, alias, created_at)` — link by name (no account ID exists in current `account_rows` schema).
-- `intent_training(id, example_text, intent, description, created_at)`.
-- `corrections(id, original_query, wrong_result, correct_result, usage_count, created_at)`.
-- `feedback(id, chat_id, query, response_summary, rating, created_at)`.
-- All have permissive RLS for now (matches existing project pattern); will tighten when auth is added.
+**Edge function changes** (`telegram-poll`)
+- New pure helpers: `parseDateRange`, `resolveAccount` (5-tier), `runReport`, `formatReport`, `buildPdf`, `buildChartUrl`
+- `conversation_state.pending.kind` extended: `account_pick`, `year_pick`, `correction`
+- Confidence gate: `< 0.9` → ask clarifier instead of running
 
-**Edge function changes (`supabase/functions/telegram-poll/index.ts`)**
-
-- Add `handleCallbackQuery` for 👍/👎 buttons.
-- Reorder `processMessage` to the 9-step pipeline.
-- Add `resolveAccount(query)` with 5-tier matching that returns `{match}|{candidates}`.
-- Add `lookupIntent(text)` against `intent_training` with simple normalized substring + token-overlap scoring before AI fallback.
-- Append `reply_markup` with feedback buttons to every report message.
-- Confidence < 90% → ask clarification, do not query.
-
-**Frontend (`src/pages/TrainingCenter.tsx` + route `/training`)**
-
-- shadcn Tabs, Tables, Dialogs for CRUD.
-- Reuse existing design tokens.
-- Add nav entries in `AppSidebar` and `BottomNav`.
+**Frontend** (`src/pages/TrainingCenter.tsx`)
+- New tabs: Accounts Master, Report Templates, expanded Analytics
+- Aliases form now picks `account_id` from a searchable list (not free-text sub-account name)
 
 **Future-ready**
+- All bot logic stays in pure helpers in the edge function, so WhatsApp / voice / OCR channels can call the same `processMessage(text, chatId)` later.
 
-- All bot logic lives in pure helpers inside the edge function so a future WhatsApp/voice channel just calls the same `processMessage(text, chatId)`.
+## Build order
+
+1. **Phase A** (Account IDs + backfill) — must land first, everything else depends on it.
+2. **Phase B** (Pipeline + reports + date parser).
+3. **Phase C** (PDF + charts).
+4. **Phase D** (Dashboard tabs).
 
 ## Open questions
 
-1. **Do you want me to build all 10 modules in one go**, or ship Phase 1 (DB + pipeline) first so you can test, then Phase 2 (admin UI) and Phase 3 (feedback buttons)?  
-ship Phase 1 (DB + pipeline) first
-2. **Authentication**: the admin pages and these new tables are currently open to anyone (matches your existing setup). Want me to add real auth + admin role gating as part of this,   
-or keep the current open model for now?  
-add real auth + admin role gating as part of this
+1. **Account type detection** during import — auto-classify by Account column (e.g. `Sales` → customer, `Purchases` → supplier) or leave `account_type` blank for admin to set later?
+2. **Backfill ambiguity** — existing rows have only names. If two different files used slightly different spellings ("NISRAN" vs "Nisran "), should backfill treat them as the **same** Account ID (normalize case/whitespace) or **different** IDs that you merge manually in the Accounts Master tab?
+3. **PDF library** — OK to use `pdf-lib` via `npm:` specifier in the edge function (lightweight, no native deps)?
 
-Reply with your preference and I'll start building.
+Reply with answers (or "your call") and I'll start Phase A.
