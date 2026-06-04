@@ -418,9 +418,13 @@ function filtersHeader(ctx: { customer?: string; date?: DateRange; report: strin
 
 // ---------- Handlers ----------
 
-async function fetchRows(supabase: any, opts: { customer?: string; accountLike?: string }) {
-  let q = supabase.from('account_rows').select('credit, debit, account, sub_account, date, description');
-  if (opts.customer) q = q.eq('sub_account', opts.customer);
+async function fetchRows(supabase: any, opts: { customer?: string; account_id?: string; accountLike?: string }) {
+  let q = supabase.from('account_rows').select('credit, debit, account, sub_account, date, description, account_id');
+  if (opts.account_id) {
+    q = q.eq('account_id', opts.account_id);
+  } else if (opts.customer) {
+    q = q.eq('sub_account', opts.customer);
+  }
   if (opts.accountLike) q = q.ilike('account', `%${opts.accountLike}%`);
   const { data } = await q;
   return data ?? [];
