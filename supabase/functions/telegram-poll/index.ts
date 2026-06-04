@@ -559,15 +559,20 @@ async function answerPending(
   const t = text.trim();
   if (pending.type === 'customer_select' && pending.candidates) {
     const idx = parseInt(t, 10);
-    let chosen: string | undefined;
+    let chosen: { account_id: string | null; name: string } | undefined;
     if (!isNaN(idx) && idx >= 1 && idx <= pending.candidates.length) {
       chosen = pending.candidates[idx - 1];
     } else {
-      // Try exact name match within candidates
-      chosen = pending.candidates.find((c) => c.toLowerCase() === t.toLowerCase());
+      // Try exact name or ACC ID match within candidates
+      chosen = pending.candidates.find(
+        (c) => c.name.toLowerCase() === t.toLowerCase() || c.account_id === t.toUpperCase(),
+      );
     }
     if (!chosen) return { reply: '', consumed: false };
-    const newCtx: ConvContext = { ...context, customer: { name: chosen } };
+    const newCtx: ConvContext = {
+      ...context,
+      customer: { name: chosen.name, account_id: chosen.account_id ?? undefined },
+    };
     const reply = await runIntent(supabase, pending.original, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
