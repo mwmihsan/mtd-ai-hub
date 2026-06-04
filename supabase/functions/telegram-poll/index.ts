@@ -648,9 +648,12 @@ async function runIntent(
         original: ex,
         candidates: cands,
       }, context);
-      return `🔎 Multiple accounts found for "<b>${ex.customer_query}</b>":\n\n${cands.map((c, i) => `  ${i + 1}. ${c}`).join('\n')}\n\nReply with the number or full name.`;
+      const list = cands
+        .map((c, i) => `  ${i + 1}. <code>${c.account_id ?? '----'}</code> — ${c.name}`)
+        .join('\n');
+      return `🔎 Multiple accounts found for "<b>${ex.customer_query}</b>":\n\n${list}\n\nReply with the number, full name, or Account ID.`;
     }
-    context.customer = { name: cands[0] };
+    context.customer = { name: cands[0].name, account_id: cands[0].account_id ?? undefined };
   }
 
   await clearPending(supabase, chatId, context);
