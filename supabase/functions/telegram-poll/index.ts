@@ -997,7 +997,7 @@ Deno.serve(async (req) => {
             // 5c) Bare-name fallback: short message + unknown intent → try customer lookup.
             if (ex.intent === 'unknown') {
               const tokens = rawText.trim().split(/\s+/);
-              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              const isBareName = tokens.length > 0 && tokens.length <= 5 && /^[A-Za-z0-9][A-Za-z0-9 .'\-]*$/.test(rawText.trim());
               if (isBareName) {
                 const cands = await findCustomerCandidates(supabase, rawText.trim());
                 if (cands.length >= 1) {
@@ -1012,7 +1012,7 @@ Deno.serve(async (req) => {
 
             if (ex.confidence < 0.4 || ex.intent === 'unknown') {
               const tokens = rawText.trim().split(/\s+/);
-              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              const isBareName = tokens.length > 0 && tokens.length <= 5 && /^[A-Za-z0-9][A-Za-z0-9 .'\-]*$/.test(rawText.trim());
               if (isBareName) {
                 reply = `❓ No customer found matching "<b>${rawText.trim()}</b>". Check the spelling or add an alias in the Training Center.`;
               } else {
