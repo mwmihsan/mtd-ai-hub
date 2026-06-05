@@ -321,14 +321,49 @@ async function findCustomerCandidates(
   const q = query.trim();
   if (!q) return [];
 
-  // 1) Exact match in accounts_master (normalized)
-  const norm = q.toUpperCase().replace(/\s+/g, ' ');
+  // 0) Account ID direct match (e.g. "ACC0003")
+  const idMatch = q.toUpperCase().match(/^ACC\d{3,}$/);
+  if (idMatch) {
+    const { data: byId } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .eq('account_id', idMatch[0]);
+    if (byId?.length) return byId.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
+
+  // 1) Exact match in accounts_master (normalized; tolerate ". " vs "." spacing)
+  const normRaw = q.toUpperCase().replace(/\s+/g, ' ');
+  const variants = new Set<string>([normRaw]);
+  // Normalize "1306.JAWFER" / "1306 JAWFER" / "1306. JAWFER" → all to "1306. JAWFER"
+  const numHead = q.match(/^\s*(\d{1,6})\s*\.?\s*(.+?)\s*$/);
+  if (numHead) {
+    const head = numHead[1];
+    const rest = numHead[2].toUpperCase().replace(/\s+/g, ' ').trim();
+    variants.add(`${head}. ${rest}`);
+    variants.add(`${head}.${rest}`);
+    variants.add(`${head} ${rest}`);
+  }
   const { data: exact } = await supabase
     .from('accounts_master')
     .select('account_id, account_name')
-    .eq('normalized_name', norm);
+    .in('normalized_name', Array.from(variants));
   if (exact && exact.length === 1) {
     return [{ account_id: exact[0].account_id, name: exact[0].account_name }];
+  }
+  if (exact && exact.length > 1) {
+    return exact.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
+
+  // 1b) Numeric-prefix exact: "1306" or "1306." → match account_name starting with that number.
+  const numOnly = q.trim().match(/^(\d{2,6})\.?$/);
+  if (numOnly) {
+    const prefix = numOnly[1];
+    const { data: byNum } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .or(`account_name.ilike.${prefix}.%,account_name.ilike.${prefix} %`)
+      .limit(20);
+    if (byNum?.length) return byNum.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
   }
 
   // 2) Alias exact match
