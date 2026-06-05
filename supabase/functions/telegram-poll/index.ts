@@ -565,18 +565,45 @@ async function handleCustomerSummary(supabase: any, ctx: ConvContext): Promise<s
   const debit = rows.reduce((s, r) => s + Number(r.debit || 0), 0);
   const credit = rows.reduce((s, r) => s + Number(r.credit || 0), 0);
   const account = rows[0]?.account || 'Unknown';
+  const meta = await fetchAccountMeta(supabase, ctx.customer!.account_id);
+  const debitCount = rows.filter((r) => Number(r.debit) > 0).length;
+  const creditCount = rows.filter((r) => Number(r.credit) > 0).length;
+
+  // Sort rows by parsed date asc for first/last; recent = last 10 newest-first
+  const dated = rows
+    .map((r) => ({ r, d: parseRowDate(r.date) }))
+    .filter((x) => x.d)
+    .sort((a, b) => a.d!.getTime() - b.d!.getTime());
+  const firstDate = dated[0]?.r.date;
+  const lastDate = dated[dated.length - 1]?.r.date;
+
+  const type = (meta?.account_type || account || '').toString();
+  const isSupplier = /supplier|purchase/i.test(type);
+  const balance = isSupplier ? credit - debit : debit - credit;
+  const balanceLabel = isSupplier ? 'Balance (Cr − Dr)' : 'Balance (Dr − Cr)';
 
   let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Customer Summary' });
-  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''} (${account})\n`;
-  reply += `💳 Total Debit: ${fmt(debit)}\n💰 Total Credit: ${fmt(credit)}\n📊 ${rows.length} transaction(s)\n`;
-  const recent = rows.slice(-5);
+  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''}\n`;
+  if (meta?.account_type) reply += `🏷️ Type: ${meta.account_type}\n`;
+  else reply += `🏷️ Group: ${account}\n`;
+  if (meta?.mobile) reply += `📱 Mobile: ${meta.mobile}\n`;
+  if (meta?.status && meta.status !== 'active') reply += `⚪ Status: ${meta.status}\n`;
+  reply += `\n💳 Total Debit: ${fmt(debit)} (${debitCount})\n`;
+  reply += `💰 Total Credit: ${fmt(credit)} (${creditCount})\n`;
+  reply += `⚖️ <b>${balanceLabel}: ${fmt(balance)}</b>\n`;
+  reply += `📊 ${rows.length} transaction(s)`;
+  if (firstDate && lastDate) reply += ` • ${firstDate} → ${lastDate}`;
+  reply += `\n`;
+
+  const recent = (dated.length ? dated.map((x) => x.r) : rows).slice(-10).reverse();
   if (recent.length) {
-    reply += `\n📝 <b>Recent:</b>\n`;
+    reply += `\n📝 <b>Recent (last ${recent.length}):</b>\n`;
     recent.forEach((r) => {
       const d = Number(r.debit) > 0 ? `Dr ${fmt(Number(r.debit))}` : `Cr ${fmt(Number(r.credit))}`;
       reply += `  • ${r.date || '-'} | ${d} | ${r.description || '-'}\n`;
     });
   }
+  reply += `\n<i>Tip: reply with a month (e.g. <b>april</b>) to filter, or <b>reset</b> to clear.</i>`;
   return reply;
 }
 
