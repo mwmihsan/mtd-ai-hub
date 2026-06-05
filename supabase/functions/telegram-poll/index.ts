@@ -468,6 +468,16 @@ async function fetchRows(supabase: any, opts: { customer?: string; account_id?: 
   return data ?? [];
 }
 
+async function fetchAccountMeta(supabase: any, account_id?: string) {
+  if (!account_id) return null;
+  const { data } = await supabase
+    .from('accounts_master')
+    .select('account_id, account_name, account_type, mobile, status')
+    .eq('account_id', account_id)
+    .maybeSingle();
+  return data ?? null;
+}
+
 function applyDateFilter(rows: any[], range: DateRange): any[] {
   if (range.kind === 'all') return rows;
   return rows.filter((r) => dateInRange(r.date, range));
