@@ -955,16 +955,39 @@ Deno.serve(async (req) => {
           } else {
             // 3) Alias expansion
             const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 3b) Raw-text exact account match (handles "1306. Jawfer", "ACC0003", "1306").
+            //     This runs BEFORE the AI so numeric prefixes are not stripped.
+            let preCands: Array<{ account_id: string | null; name: string }> | null = null;
+            const rawTrim = rawText.trim();
+            if (/^[A-Za-z0-9 .'\-]+$/.test(rawTrim) && rawTrim.split(/\s+/).length <= 6) {
+              const c = await findCustomerCandidates(supabase, rawTrim);
+              // Only short-circuit on a single confident hit. Multi-hit falls through to normal flow.
+              if (c.length === 1) preCands = c;
+            }
             // 4) Trained intent
             const trainedIntent = await lookupTrainedIntent(supabase, expanded);
             let ex: Extracted;
-            if (trainedIntent) {
+            if (preCands) {
+              ex = {
+                intent: 'customer_lookup',
+                customer_query: preCands[0].name,
+                date_text: null, month: null, year: null,
+                confidence: 0.98,
+              };
+              console.log(`[telegram-poll] raw-text exact account hit → ${preCands[0].account_id} ${preCands[0].name}`);
+            } else if (trainedIntent) {
               ex = trainedIntentToExtract(trainedIntent, resolved ?? null);
               console.log(`[telegram-poll] trained intent=${trainedIntent}`);
             } else {
               // 5) AI extraction
               ex = await aiExtract(expanded, LOVABLE_API_KEY);
               if (resolved && !ex.customer_query) ex.customer_query = resolved;
+              // If the user message has a numeric account code, prefer the raw text over
+              // the AI's stripped name (e.g. AI returns "Jawfer" for "1306. Jawfer").
+              if (/^\s*\d{2,6}\.?\s+\S+/.test(rawText) && ex.intent !== 'sales' && ex.intent !== 'purchase' && ex.intent !== 'expense' && ex.intent !== 'profit' && ex.intent !== 'report') {
+                ex.customer_query = rawTrim;
+                if (ex.intent === 'unknown') ex.intent = 'customer_lookup';
+              }
               console.log(`[telegram-poll] extracted`, ex);
             }
 
