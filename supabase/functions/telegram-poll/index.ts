@@ -321,14 +321,49 @@ async function findCustomerCandidates(
   const q = query.trim();
   if (!q) return [];
 
-  // 1) Exact match in accounts_master (normalized)
-  const norm = q.toUpperCase().replace(/\s+/g, ' ');
+  // 0) Account ID direct match (e.g. "ACC0003")
+  const idMatch = q.toUpperCase().match(/^ACC\d{3,}$/);
+  if (idMatch) {
+    const { data: byId } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .eq('account_id', idMatch[0]);
+    if (byId?.length) return byId.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
+
+  // 1) Exact match in accounts_master (normalized; tolerate ". " vs "." spacing)
+  const normRaw = q.toUpperCase().replace(/\s+/g, ' ');
+  const variants = new Set<string>([normRaw]);
+  // Normalize "1306.JAWFER" / "1306 JAWFER" / "1306. JAWFER" → all to "1306. JAWFER"
+  const numHead = q.match(/^\s*(\d{1,6})\s*\.?\s*(.+?)\s*$/);
+  if (numHead) {
+    const head = numHead[1];
+    const rest = numHead[2].toUpperCase().replace(/\s+/g, ' ').trim();
+    variants.add(`${head}. ${rest}`);
+    variants.add(`${head}.${rest}`);
+    variants.add(`${head} ${rest}`);
+  }
   const { data: exact } = await supabase
     .from('accounts_master')
     .select('account_id, account_name')
-    .eq('normalized_name', norm);
+    .in('normalized_name', Array.from(variants));
   if (exact && exact.length === 1) {
     return [{ account_id: exact[0].account_id, name: exact[0].account_name }];
+  }
+  if (exact && exact.length > 1) {
+    return exact.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
+  }
+
+  // 1b) Numeric-prefix exact: "1306" or "1306." → match account_name starting with that number.
+  const numOnly = q.trim().match(/^(\d{2,6})\.?$/);
+  if (numOnly) {
+    const prefix = numOnly[1];
+    const { data: byNum } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .or(`account_name.ilike.${prefix}.%,account_name.ilike.${prefix} %`)
+      .limit(20);
+    if (byNum?.length) return byNum.map((a: any) => ({ account_id: a.account_id, name: a.account_name }));
   }
 
   // 2) Alias exact match
@@ -662,13 +697,26 @@ async function answerPending(
       chosen = pending.candidates.find(
         (c) => c.name.toLowerCase() === t.toLowerCase() || c.account_id === t.toUpperCase(),
       );
+      // Numeric-prefix match (e.g. "1306" → "1306. JAWFER") within the offered candidates only.
+      if (!chosen) {
+        const numHit = t.trim().match(/^(\d{2,6})\.?$/);
+        if (numHit) {
+          const pref = numHit[1] + '.';
+          const matches = pending.candidates.filter((c) => c.name.trim().startsWith(pref));
+          if (matches.length === 1) chosen = matches[0];
+        }
+      }
     }
     if (!chosen) return { reply: '', consumed: false };
     const newCtx: ConvContext = {
       ...context,
       customer: { name: chosen.name, account_id: chosen.account_id ?? undefined },
     };
-    const reply = await runIntent(supabase, pending.original, newCtx, settings, chatId);
+    // CRITICAL: clear customer_query on the replayed extract so runIntent uses the
+    // selected context.customer instead of re-running the search and showing the same list.
+    const replay: Extracted = { ...pending.original, customer_query: null };
+    if (replay.intent === 'unknown') replay.intent = 'customer_lookup';
+    const reply = await runIntent(supabase, replay, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
   if (pending.type === 'date_year' && pending.available_years && pending.original.month) {
@@ -907,16 +955,39 @@ Deno.serve(async (req) => {
           } else {
             // 3) Alias expansion
             const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 3b) Raw-text exact account match (handles "1306. Jawfer", "ACC0003", "1306").
+            //     This runs BEFORE the AI so numeric prefixes are not stripped.
+            let preCands: Array<{ account_id: string | null; name: string }> | null = null;
+            const rawTrim = rawText.trim();
+            if (/^[A-Za-z0-9 .'\-]+$/.test(rawTrim) && rawTrim.split(/\s+/).length <= 6) {
+              const c = await findCustomerCandidates(supabase, rawTrim);
+              // Only short-circuit on a single confident hit. Multi-hit falls through to normal flow.
+              if (c.length === 1) preCands = c;
+            }
             // 4) Trained intent
             const trainedIntent = await lookupTrainedIntent(supabase, expanded);
             let ex: Extracted;
-            if (trainedIntent) {
+            if (preCands) {
+              ex = {
+                intent: 'customer_lookup',
+                customer_query: preCands[0].name,
+                date_text: null, month: null, year: null,
+                confidence: 0.98,
+              };
+              console.log(`[telegram-poll] raw-text exact account hit → ${preCands[0].account_id} ${preCands[0].name}`);
+            } else if (trainedIntent) {
               ex = trainedIntentToExtract(trainedIntent, resolved ?? null);
               console.log(`[telegram-poll] trained intent=${trainedIntent}`);
             } else {
               // 5) AI extraction
               ex = await aiExtract(expanded, LOVABLE_API_KEY);
               if (resolved && !ex.customer_query) ex.customer_query = resolved;
+              // If the user message has a numeric account code, prefer the raw text over
+              // the AI's stripped name (e.g. AI returns "Jawfer" for "1306. Jawfer").
+              if (/^\s*\d{2,6}\.?\s+\S+/.test(rawText) && ex.intent !== 'sales' && ex.intent !== 'purchase' && ex.intent !== 'expense' && ex.intent !== 'profit' && ex.intent !== 'report') {
+                ex.customer_query = rawTrim;
+                if (ex.intent === 'unknown') ex.intent = 'customer_lookup';
+              }
               console.log(`[telegram-poll] extracted`, ex);
             }
 
@@ -926,7 +997,7 @@ Deno.serve(async (req) => {
             // 5c) Bare-name fallback: short message + unknown intent → try customer lookup.
             if (ex.intent === 'unknown') {
               const tokens = rawText.trim().split(/\s+/);
-              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              const isBareName = tokens.length > 0 && tokens.length <= 5 && /^[A-Za-z0-9][A-Za-z0-9 .'\-]*$/.test(rawText.trim());
               if (isBareName) {
                 const cands = await findCustomerCandidates(supabase, rawText.trim());
                 if (cands.length >= 1) {
@@ -941,7 +1012,7 @@ Deno.serve(async (req) => {
 
             if (ex.confidence < 0.4 || ex.intent === 'unknown') {
               const tokens = rawText.trim().split(/\s+/);
-              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              const isBareName = tokens.length > 0 && tokens.length <= 5 && /^[A-Za-z0-9][A-Za-z0-9 .'\-]*$/.test(rawText.trim());
               if (isBareName) {
                 reply = `❓ No customer found matching "<b>${rawText.trim()}</b>". Check the spelling or add an alias in the Training Center.`;
               } else {

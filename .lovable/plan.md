@@ -1,95 +1,47 @@
+Implement a targeted Telegram bot accuracy patch in `supabase/functions/telegram-poll/index.ts`.
 
-# Telegram Bot Accuracy Fixes
+## Goal
+Make numbered sub-accounts like `1306. Jawfer`, `1024. Jawfer`, `1224. Ranjith`, etc. resolve by the exact account code/name instead of stripping the number and repeatedly asking for selection.
 
-Three concrete bugs from the screenshots, each with a targeted fix in `supabase/functions/telegram-poll/index.ts` (no schema changes).
+## Changes
 
----
+1. Fix repeated account-selection loop
+- When the user replies `1`, `2`, or an Account ID to a multiple-account prompt, keep the selected account in context.
+- Replay the original request with `customer_query` cleared so `runIntent()` does not search `Jawfer` again and return the same selection list.
 
-## Bug 1 — Account selection reply is too thin
+2. Add numbered sub-account parsing
+- Detect account-style inputs such as:
+  - `1306. Jawfer`
+  - `1306 Jawfer`
+  - `1306`
+  - `ACC0003`
+- Prefer exact Account ID / account-code matches before fuzzy name matching.
+- If `1306. Jawfer` uniquely maps to `ACC0003 — 1306. JAWFER`, return that account directly.
+- If the code/name combination does not uniquely match, show a clear shortlist with Account IDs and names.
 
-Current `handleCustomerSummary` shows only account name, totals and 5 recent rows.
+3. Preserve raw user text before AI extraction
+- The AI sometimes extracts only `Jawfer` from `1306. Jawfer`, which loses the important `1306` code.
+- Add a pre-resolution step using the raw Telegram text so exact numeric account codes are handled before the AI result is trusted.
 
-**Fix** — expand the reply to include:
+4. Improve candidate matching rules
+- Let bare-name fallback accept digits and dots, not only letters.
+- Allow selection by:
+  - list number (`1`)
+  - Account ID (`ACC0003`)
+  - full account name (`1306. JAWFER`)
+  - numeric prefix (`1306`) when it uniquely identifies a listed candidate.
 
-- Account ID + name + type + mobile + status (pulled from `accounts_master`)
-- Balance line: `Balance = Debit − Credit` (or Credit − Debit for suppliers based on `account_type`), explicitly labelled
-- Transaction count split: debits vs credits
-- First date / last date of activity
-- Last 10 transactions (was 5), newest first, formatted as `date | Dr/Cr amount | description`
-- Footer hint: "Reply <i>pdf</i> for full statement, <i>april</i> to filter month" (PDF is later phase, hint only)
+5. Keep no-guessing behavior
+- Do not merge `1024. JAWFER`, `1187. JAWFER`, and `1306. JAWFER`.
+- If a query is not exact, continue showing the account list with IDs.
+- Example: if the database has `1386. RAJANTHA` but the user asks `1386. Ranjith`, the bot should not silently choose the wrong account; it should ask for clarification or show closest valid matches.
 
-Add a small `fetchAccountMeta(account_id)` helper that queries `accounts_master`.
-
----
-
-## Bug 2 — "wood working" / single-name queries return "I'm not sure"
-
-Root cause: the AI extractor returns `intent=unknown, confidence≈0.6` when the user sends only a bare name with no verb. The pipeline then bails out instead of treating it as a customer lookup.
-
-**Fix** — before falling through to the generic "I don't understand" reply:
-
-1. After AI extraction, if `intent === 'unknown'` **and** the raw text is short (≤ 4 tokens, alphabetic), run `findCustomerCandidates(rawText)`.
-   - 1 match → treat as `customer_lookup` for that account.
-   - >1 matches → trigger the existing disambiguation flow.
-   - 0 matches → keep the current "not sure" reply but include the search miss ("No customer named '<i>wood working</i>' found").
-2. Lower the unknown-cutoff: only show the "not sure" message when `confidence < 0.4` AND no customer candidates exist.
-
-This recovers "Wood working", "Aazir", "Nisran", typos, etc., without ever guessing.
-
----
-
-## Bug 3 — "April sales" / "march purchase" returns wrong account or 0 transactions
-
-Two compounding bugs visible in screenshot 2:
-
-### 3a. Trained-intent shortcut discards the date
-`lookupTrainedIntent` matches "april sales" → `sales_report` (confidence 0.95) and returns immediately via `trainedIntentToExtract`, which hard-codes `month: null, year: null, date_text: null`. The "april" is lost, so the report falls back to "All time".
-
-**Fix** — after `trainedIntentToExtract`, run a lightweight local date parser on the original text and merge it in:
-
-- Detect month names / `today` / `yesterday` / `this year` / `last month` / `YYYY` via the existing `monthFromText` + a regex.
-- Populate `ex.month`, `ex.year`, `ex.date_text` on the trained-intent result.
-- Same parser also runs as a safety net on the AI-extracted result (so a model miss on the date is still recovered).
-
-### 3b. Sticky customer context leaks into unrelated next queries
-After the user picked "2. NISRAN", `context.customer` was kept. The next message "April sales" inherited it, scoping sales to NISRAN → 0 rows.
-
-**Fix** — clear `context.customer` (and `context.date`) when the new message looks like a fresh, self-contained query:
-
-- The new extract has its own `customer_query` → replace, don't merge.
-- The new extract has its own date phrase → replace, don't merge.
-- The new intent is a top-level totals/profit/report **and** the user did not reference the previous customer (no pronoun like "his", "her", "their", or the customer name) → drop `context.customer`.
-- Add an explicit reset trigger: any of `sales`, `purchase`, `expense`, `profit`, `report` without a customer phrase → start from clean context.
-
-Result:
-- "Nisran" → pick 2 → summary for NISRAN (context kept).
-- "April sales" → context.customer dropped, date=April, asks for year if ambiguous (since two years exist in the data), then returns overall April sales.
-- "His april sales" → context.customer kept, date=April, scoped report.
-
-### 3c. Missing year prompt was skipped
-When trained-intent path was used, the "ask for year" branch in `runIntent` never fired because date was null. With 3a fixed, "April sales" now reaches `resolveDateFromExtract` with `month=4, year=null`, which already triggers the year-disambiguation prompt correctly.
-
----
-
-## Technical summary of edits (one file)
-
-`supabase/functions/telegram-poll/index.ts`:
-
-1. New helper `parseDateFromText(text): Partial<Extracted>` — month name, `today`, `yesterday`, `this/last year`, `this/last month`, `between X and Y`, `YYYY`.
-2. Apply it inside the pipeline:
-   - After `trainedIntentToExtract` (overwrite null fields).
-   - After `aiExtract` (overwrite only when AI returned null).
-3. New helper `isFreshTopLevelQuery(ex, rawText, context)` → returns whether to drop sticky `context.customer` / `context.date`. Wire into the pipeline just before `runIntent`.
-4. `runIntent` — after AI step in main handler, if `ex.intent === 'unknown'` and `rawText` is ≤ 4 alphabetic tokens, call `findCustomerCandidates(rawText)` and either set `ex.intent='customer_lookup'` with single match, trigger disambiguation, or return a clear "not found" message.
-5. `fetchAccountMeta(account_id)` helper + expanded `handleCustomerSummary` reply (account meta block, balance line, debit/credit counts, first/last date, last 10 transactions, footer hint).
-
-No DB migrations. No frontend changes. Edge function will redeploy automatically.
-
----
-
-## Out of scope (call out only)
-
-- PDF export, charts, multi-language — already in Phase C/D of the broader plan; this fix is just the accuracy patch.
-- Adding more training examples for "wood working" — fix above makes it work without training, and you can still add an alias in the Training Center for cleaner display.
-
-Reply "go" and I'll apply the patch.
+## Validation
+- Check database samples for `Jawfer` and `Ranjith` account rows.
+- Deploy the updated Telegram function.
+- Verify these flows from logs/function behavior:
+  - `1306. Jawfer` resolves directly to `ACC0003 — 1306. JAWFER`.
+  - `Jawfer` still shows multiple accounts.
+  - Replying `1` to a multiple-account list returns the selected account summary, not the same list again.
+  - `1224. Ranjith` resolves directly.
+  - Ambiguous or mismatched code/name queries do not guess.
