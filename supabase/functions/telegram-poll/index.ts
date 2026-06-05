@@ -72,6 +72,39 @@ function monthLabel(m: number, y?: number): string {
   return `${MONTHS[m - 1][0].toUpperCase() + MONTHS[m - 1].slice(1)}${y ? ' ' + y : ''}`;
 }
 
+/** Local date parser — used to recover dates when trained-intent or AI miss them. */
+function parseDateFromText(text: string): { month?: number; year?: number; date_text?: string; relative?: 'today' | 'yesterday' | 'this_year' | 'last_year' | 'this_month' | 'last_month' } {
+  const t = (text || '').toLowerCase();
+  const out: ReturnType<typeof parseDateFromText> = {};
+  if (/\btoday\b/.test(t)) { out.relative = 'today'; out.date_text = 'today'; return out; }
+  if (/\byesterday\b/.test(t)) { out.relative = 'yesterday'; out.date_text = 'yesterday'; return out; }
+  if (/\bthis\s+year\b/.test(t)) { out.relative = 'this_year'; out.year = new Date().getFullYear(); out.date_text = 'this year'; return out; }
+  if (/\blast\s+year\b/.test(t)) { out.relative = 'last_year'; out.year = new Date().getFullYear() - 1; out.date_text = 'last year'; return out; }
+  if (/\bthis\s+month\b/.test(t)) {
+    const now = new Date();
+    out.relative = 'this_month'; out.month = now.getMonth() + 1; out.year = now.getFullYear();
+    out.date_text = 'this month'; return out;
+  }
+  if (/\blast\s+month\b/.test(t)) {
+    const now = new Date(); now.setMonth(now.getMonth() - 1);
+    out.relative = 'last_month'; out.month = now.getMonth() + 1; out.year = now.getFullYear();
+    out.date_text = 'last month'; return out;
+  }
+  const m = monthFromText(t);
+  if (m) { out.month = m; out.date_text = t; }
+  const ym = t.match(/\b(20\d{2})\b/);
+  if (ym) out.year = parseInt(ym[1], 10);
+  return out;
+}
+
+/** Merge a parsed date into an Extracted, only filling in null fields. */
+function mergeDate(ex: Extracted, parsed: ReturnType<typeof parseDateFromText>): Extracted {
+  if (parsed.month && !ex.month) ex.month = parsed.month;
+  if (parsed.year && !ex.year) ex.year = parsed.year;
+  if (parsed.date_text && !ex.date_text) ex.date_text = parsed.date_text;
+  return ex;
+}
+
 function parseRowDate(s: string | null | undefined): Date | null {
   if (!s) return null;
   // Try ISO first, then dd/mm/yyyy or dd-mm-yyyy
