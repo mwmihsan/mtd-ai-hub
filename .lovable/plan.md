@@ -1,125 +1,95 @@
-# Advanced Accounting AI Agent — Build Plan
 
-Extends the existing Phase 1/2 Training Center into a full accounting agent. Adds a permanent Account ID system, deterministic SQL-based calculations, PDF/chart reports, and richer admin tools.
+# Telegram Bot Accuracy Fixes
 
-## What you'll get
-
-1. **Permanent Account IDs** (`ACC0001`…) auto-assigned on import; every transaction is linked by ID, never by name.
-2. **Disambiguation by ID** — when multiple accounts share a similar name, bot lists them with IDs and asks you to pick.
-3. **Strict pipeline** — Memory → Alias → Intent training → AI (intent + dates + account only) → DB query → formatted reply → feedback log.
-4. **Date parser** — handles `today`, `last week`, `april`, `2025 april`, `between jan and march`; asks for the year when ambiguous.
-5. **All reports**: monthly sales / purchases / expenses, customer & supplier balances, account statement, debit/credit totals, profit, monthly comparison, ledger.
-6. **PDF reports** with filters, summary, transactions, totals + chart images (bar/line/pie) sent directly to Telegram.
-7. **Admin dashboard** expansion: Accounts Master, Aliases, Intents, Corrections, Memory, Feedback Analytics, Report Templates.
-8. **Accuracy guards** — never guess year/account; confidence < 90% asks; all maths from DB.
+Three concrete bugs from the screenshots, each with a targeted fix in `supabase/functions/telegram-poll/index.ts` (no schema changes).
 
 ---
 
-## Phase A — Account ID foundation (DB + import)
+## Bug 1 — Account selection reply is too thin
 
-**New tables**
+Current `handleCustomerSummary` shows only account name, totals and 5 recent rows.
 
-- `accounts_master(account_id text PK ACC####, account_name, account_type, mobile, status, created_at)`
-- Extend `account_aliases` with `account_id` (keep old `sub_account_name` for back-compat, populate during migration)
-- Extend `account_rows` with `account_id text` (nullable, indexed)
-- Sequence + function `next_account_id()` → `ACC0001`…
-- Function `resolve_or_create_account(name)` → returns `account_id` (matches by exact name → alias → fuzzy; creates new if none)
-- Backfill: walk existing `account_rows`, assign IDs, populate `accounts_master`
+**Fix** — expand the reply to include:
 
-**Import flow update**
-On Excel upload, for each unique `sub_account`, call `resolve_or_create_account` and stamp `account_id` on every row.
+- Account ID + name + type + mobile + status (pulled from `accounts_master`)
+- Balance line: `Balance = Debit − Credit` (or Credit − Debit for suppliers based on `account_type`), explicitly labelled
+- Transaction count split: debits vs credits
+- First date / last date of activity
+- Last 10 transactions (was 5), newest first, formatted as `date | Dr/Cr amount | description`
+- Footer hint: "Reply <i>pdf</i> for full statement, <i>april</i> to filter month" (PDF is later phase, hint only)
 
-## Phase B — Pipeline rewrite (`telegram-poll`)
+Add a small `fetchAccountMeta(account_id)` helper that queries `accounts_master`.
 
-8-step pipeline as specified. AI (Gemini via Lovable AI) extracts **only**:
+---
 
-```
-{ intent, accountQuery, startDate, endDate, reportType, confidence }
-```
+## Bug 2 — "wood working" / single-name queries return "I'm not sure"
 
-Account resolution returns `{match}` or `{candidates: [{account_id, account_name}]}`. If candidates, store pending action and reply:
+Root cause: the AI extractor returns `intent=unknown, confidence≈0.6` when the user sends only a bare name with no verb. The pipeline then bails out instead of treating it as a customer lookup.
 
-```
-Multiple accounts found:
-1. ACC0001 - M.N.M NISRAN
-2. ACC0002 - NISRAN
-Reply 1 or 2.
-```
+**Fix** — before falling through to the generic "I don't understand" reply:
 
-User's numeric reply resumes the original query from `conversation_state.original_query` with the chosen `account_id`.
+1. After AI extraction, if `intent === 'unknown'` **and** the raw text is short (≤ 4 tokens, alphabetic), run `findCustomerCandidates(rawText)`.
+   - 1 match → treat as `customer_lookup` for that account.
+   - >1 matches → trigger the existing disambiguation flow.
+   - 0 matches → keep the current "not sure" reply but include the search miss ("No customer named '<i>wood working</i>' found").
+2. Lower the unknown-cutoff: only show the "not sure" message when `confidence < 0.4` AND no customer candidates exist.
 
-**Date parser** as a pure helper (`parseDateRange(text, now)`); returns `{start, end}` or `{askYear: true}`.
+This recovers "Wood working", "Aazir", "Nisran", typos, etc., without ever guessing.
 
-**Reports** are pure SQL functions keyed by `report_type`:
-- `account_statement(account_id, start, end)`
-- `monthly_sales(account_id?, start, end)`
-- `monthly_purchases`, `monthly_expenses`
-- `customer_balance(account_id)` → `SUM(debit) - SUM(credit)`
-- `supplier_balance(account_id)` → `SUM(credit) - SUM(debit)`
-- `profit(start, end)` → `sales - purchases - expenses`
-- `monthly_comparison(months[])`
-- `ledger(account_id, start, end)`
+---
 
-All replies use the standard header:
+## Bug 3 — "April sales" / "march purchase" returns wrong account or 0 transactions
 
-```
-Applied Filters:
-Account: M.N.M NISRAN (ACC0001)
-Date Range: 01-Apr-2025 to 30-Apr-2025
-Report: Account Statement
+Two compounding bugs visible in screenshot 2:
 
-Results: …
-```
+### 3a. Trained-intent shortcut discards the date
+`lookupTrainedIntent` matches "april sales" → `sales_report` (confidence 0.95) and returns immediately via `trainedIntentToExtract`, which hard-codes `month: null, year: null, date_text: null`. The "april" is lost, so the report falls back to "All time".
 
-Each reply ends with 👍/👎 inline buttons (existing feedback flow).
+**Fix** — after `trainedIntentToExtract`, run a lightweight local date parser on the original text and merge it in:
 
-## Phase C — PDF & charts
+- Detect month names / `today` / `yesterday` / `this year` / `last month` / `YYYY` via the existing `monthFromText` + a regex.
+- Populate `ex.month`, `ex.year`, `ex.date_text` on the trained-intent result.
+- Same parser also runs as a safety net on the AI-extracted result (so a model miss on the date is still recovered).
 
-Edge function helper `buildReportPdf(report, filters)` using `pdf-lib` (Deno-compatible) generating: title, filters block, summary, transactions table, totals, optional chart image. Charts rendered server-side via `quickchart.io` URL (no extra deps) embedded as PNG. PDF sent via Telegram `sendDocument`; chart-only requests via `sendPhoto`.
+### 3b. Sticky customer context leaks into unrelated next queries
+After the user picked "2. NISRAN", `context.customer` was kept. The next message "April sales" inherited it, scoping sales to NISRAN → 0 rows.
 
-Triggers: keywords `pdf`, `statement pdf`, `chart`, `chart pdf` in the user message (also stored as intents).
+**Fix** — clear `context.customer` (and `context.date`) when the new message looks like a fresh, self-contained query:
 
-## Phase D — Admin dashboard expansion
+- The new extract has its own `customer_query` → replace, don't merge.
+- The new extract has its own date phrase → replace, don't merge.
+- The new intent is a top-level totals/profit/report **and** the user did not reference the previous customer (no pronoun like "his", "her", "their", or the customer name) → drop `context.customer`.
+- Add an explicit reset trigger: any of `sales`, `purchase`, `expense`, `profit`, `report` without a customer phrase → start from clean context.
 
-Extend `/training` with new tabs:
+Result:
+- "Nisran" → pick 2 → summary for NISRAN (context kept).
+- "April sales" → context.customer dropped, date=April, asks for year if ambiguous (since two years exist in the data), then returns overall April sales.
+- "His april sales" → context.customer kept, date=April, scoped report.
 
-- **Accounts Master** — list `accounts_master` with ID, name, type, mobile, status; inline edit; merge tool stays disabled (per "never merge").
-- **Report Templates** — saved canned queries that map to `report_type` + default filters.
-- **Feedback Analytics** — top queries, accuracy %, failed-search list, most-corrected queries.
-- Existing tabs (Aliases, Intents, Corrections, Memory) get an `account_id` column where relevant.
+### 3c. Missing year prompt was skipped
+When trained-intent path was used, the "ask for year" branch in `runIntent` never fired because date was null. With 3a fixed, "April sales" now reaches `resolveDateFromExtract` with `month=4, year=null`, which already triggers the year-disambiguation prompt correctly.
 
-## Technical details
+---
 
-**New migrations**
-- `accounts_master`, `next_account_id()`, `resolve_or_create_account()` (SECURITY DEFINER, locked search_path)
-- ALTER `account_aliases ADD account_id text` + index
-- ALTER `account_rows ADD account_id text` + index + backfill
-- `report_templates(id, name, intent, default_filters jsonb, created_at)`
-- All new tables: GRANTs + RLS (admin write, public read where bot needs it)
+## Technical summary of edits (one file)
 
-**Edge function changes** (`telegram-poll`)
-- New pure helpers: `parseDateRange`, `resolveAccount` (5-tier), `runReport`, `formatReport`, `buildPdf`, `buildChartUrl`
-- `conversation_state.pending.kind` extended: `account_pick`, `year_pick`, `correction`
-- Confidence gate: `< 0.9` → ask clarifier instead of running
+`supabase/functions/telegram-poll/index.ts`:
 
-**Frontend** (`src/pages/TrainingCenter.tsx`)
-- New tabs: Accounts Master, Report Templates, expanded Analytics
-- Aliases form now picks `account_id` from a searchable list (not free-text sub-account name)
+1. New helper `parseDateFromText(text): Partial<Extracted>` — month name, `today`, `yesterday`, `this/last year`, `this/last month`, `between X and Y`, `YYYY`.
+2. Apply it inside the pipeline:
+   - After `trainedIntentToExtract` (overwrite null fields).
+   - After `aiExtract` (overwrite only when AI returned null).
+3. New helper `isFreshTopLevelQuery(ex, rawText, context)` → returns whether to drop sticky `context.customer` / `context.date`. Wire into the pipeline just before `runIntent`.
+4. `runIntent` — after AI step in main handler, if `ex.intent === 'unknown'` and `rawText` is ≤ 4 alphabetic tokens, call `findCustomerCandidates(rawText)` and either set `ex.intent='customer_lookup'` with single match, trigger disambiguation, or return a clear "not found" message.
+5. `fetchAccountMeta(account_id)` helper + expanded `handleCustomerSummary` reply (account meta block, balance line, debit/credit counts, first/last date, last 10 transactions, footer hint).
 
-**Future-ready**
-- All bot logic stays in pure helpers in the edge function, so WhatsApp / voice / OCR channels can call the same `processMessage(text, chatId)` later.
+No DB migrations. No frontend changes. Edge function will redeploy automatically.
 
-## Build order
+---
 
-1. **Phase A** (Account IDs + backfill) — must land first, everything else depends on it.
-2. **Phase B** (Pipeline + reports + date parser).
-3. **Phase C** (PDF + charts).
-4. **Phase D** (Dashboard tabs).
+## Out of scope (call out only)
 
-## Open questions
+- PDF export, charts, multi-language — already in Phase C/D of the broader plan; this fix is just the accuracy patch.
+- Adding more training examples for "wood working" — fix above makes it work without training, and you can still add an alias in the Training Center for cleaner display.
 
-1. **Account type detection** during import — auto-classify by Account column (e.g. `Sales` → customer, `Purchases` → supplier) or leave `account_type` blank for admin to set later?
-2. **Backfill ambiguity** — existing rows have only names. If two different files used slightly different spellings ("NISRAN" vs "Nisran "), should backfill treat them as the **same** Account ID (normalize case/whitespace) or **different** IDs that you merge manually in the Accounts Master tab?
-3. **PDF library** — OK to use `pdf-lib` via `npm:` specifier in the edge function (lightweight, no native deps)?
-
-Reply with answers (or "your call") and I'll start Phase A.
+Reply "go" and I'll apply the patch.

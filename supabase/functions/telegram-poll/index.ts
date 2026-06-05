@@ -72,6 +72,39 @@ function monthLabel(m: number, y?: number): string {
   return `${MONTHS[m - 1][0].toUpperCase() + MONTHS[m - 1].slice(1)}${y ? ' ' + y : ''}`;
 }
 
+/** Local date parser — used to recover dates when trained-intent or AI miss them. */
+function parseDateFromText(text: string): { month?: number; year?: number; date_text?: string; relative?: 'today' | 'yesterday' | 'this_year' | 'last_year' | 'this_month' | 'last_month' } {
+  const t = (text || '').toLowerCase();
+  const out: ReturnType<typeof parseDateFromText> = {};
+  if (/\btoday\b/.test(t)) { out.relative = 'today'; out.date_text = 'today'; return out; }
+  if (/\byesterday\b/.test(t)) { out.relative = 'yesterday'; out.date_text = 'yesterday'; return out; }
+  if (/\bthis\s+year\b/.test(t)) { out.relative = 'this_year'; out.year = new Date().getFullYear(); out.date_text = 'this year'; return out; }
+  if (/\blast\s+year\b/.test(t)) { out.relative = 'last_year'; out.year = new Date().getFullYear() - 1; out.date_text = 'last year'; return out; }
+  if (/\bthis\s+month\b/.test(t)) {
+    const now = new Date();
+    out.relative = 'this_month'; out.month = now.getMonth() + 1; out.year = now.getFullYear();
+    out.date_text = 'this month'; return out;
+  }
+  if (/\blast\s+month\b/.test(t)) {
+    const now = new Date(); now.setMonth(now.getMonth() - 1);
+    out.relative = 'last_month'; out.month = now.getMonth() + 1; out.year = now.getFullYear();
+    out.date_text = 'last month'; return out;
+  }
+  const m = monthFromText(t);
+  if (m) { out.month = m; out.date_text = t; }
+  const ym = t.match(/\b(20\d{2})\b/);
+  if (ym) out.year = parseInt(ym[1], 10);
+  return out;
+}
+
+/** Merge a parsed date into an Extracted, only filling in null fields. */
+function mergeDate(ex: Extracted, parsed: ReturnType<typeof parseDateFromText>): Extracted {
+  if (parsed.month && !ex.month) ex.month = parsed.month;
+  if (parsed.year && !ex.year) ex.year = parsed.year;
+  if (parsed.date_text && !ex.date_text) ex.date_text = parsed.date_text;
+  return ex;
+}
+
 function parseRowDate(s: string | null | undefined): Date | null {
   if (!s) return null;
   // Try ISO first, then dd/mm/yyyy or dd-mm-yyyy
@@ -421,6 +454,29 @@ function customerLabel(c?: { name: string; account_id?: string }): string | unde
   return c.account_id ? `${c.name} (${c.account_id})` : c.name;
 }
 
+/** Drop sticky context.customer / context.date when a new message is a fresh top-level query. */
+function freshenContext(ex: Extracted, rawText: string, context: ConvContext): ConvContext {
+  const out: ConvContext = { ...context };
+  const lower = rawText.toLowerCase();
+  const referencesPrev = !!(out.customer && (
+    /\b(his|her|their|same)\b/.test(lower) ||
+    lower.includes(out.customer.name.toLowerCase())
+  ));
+  const topLevel = ['sales', 'purchase', 'expense', 'profit', 'report', 'stock'].includes(ex.intent);
+
+  // If extract provides its own customer_query, the runIntent customer resolution will override anyway —
+  // but clear sticky customer so we don't accidentally merge.
+  if (ex.customer_query) out.customer = undefined;
+
+  // Top-level totals/reports with no reference to previous customer → drop sticky customer.
+  if (topLevel && !ex.customer_query && !referencesPrev) out.customer = undefined;
+
+  // If the new query brings its own date phrase, drop sticky date so we don't merge.
+  if (ex.date_text || ex.month || ex.year) out.date = undefined;
+
+  return out;
+}
+
 // ---------- Handlers ----------
 
 async function fetchRows(supabase: any, opts: { customer?: string; account_id?: string; accountLike?: string }) {
@@ -433,6 +489,16 @@ async function fetchRows(supabase: any, opts: { customer?: string; account_id?: 
   if (opts.accountLike) q = q.ilike('account', `%${opts.accountLike}%`);
   const { data } = await q;
   return data ?? [];
+}
+
+async function fetchAccountMeta(supabase: any, account_id?: string) {
+  if (!account_id) return null;
+  const { data } = await supabase
+    .from('accounts_master')
+    .select('account_id, account_name, account_type, mobile, status')
+    .eq('account_id', account_id)
+    .maybeSingle();
+  return data ?? null;
 }
 
 function applyDateFilter(rows: any[], range: DateRange): any[] {
@@ -522,18 +588,45 @@ async function handleCustomerSummary(supabase: any, ctx: ConvContext): Promise<s
   const debit = rows.reduce((s, r) => s + Number(r.debit || 0), 0);
   const credit = rows.reduce((s, r) => s + Number(r.credit || 0), 0);
   const account = rows[0]?.account || 'Unknown';
+  const meta = await fetchAccountMeta(supabase, ctx.customer!.account_id);
+  const debitCount = rows.filter((r) => Number(r.debit) > 0).length;
+  const creditCount = rows.filter((r) => Number(r.credit) > 0).length;
+
+  // Sort rows by parsed date asc for first/last; recent = last 10 newest-first
+  const dated = rows
+    .map((r) => ({ r, d: parseRowDate(r.date) }))
+    .filter((x) => x.d)
+    .sort((a, b) => a.d!.getTime() - b.d!.getTime());
+  const firstDate = dated[0]?.r.date;
+  const lastDate = dated[dated.length - 1]?.r.date;
+
+  const type = (meta?.account_type || account || '').toString();
+  const isSupplier = /supplier|purchase/i.test(type);
+  const balance = isSupplier ? credit - debit : debit - credit;
+  const balanceLabel = isSupplier ? 'Balance (Cr − Dr)' : 'Balance (Dr − Cr)';
 
   let reply = filtersHeader({ customer: customerLabel(ctx.customer), date: ctx.date, report: 'Customer Summary' });
-  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''} (${account})\n`;
-  reply += `💳 Total Debit: ${fmt(debit)}\n💰 Total Credit: ${fmt(credit)}\n📊 ${rows.length} transaction(s)\n`;
-  const recent = rows.slice(-5);
+  reply += `👤 <b>${ctx.customer!.name}</b> ${ctx.customer!.account_id ? `<code>${ctx.customer!.account_id}</code>` : ''}\n`;
+  if (meta?.account_type) reply += `🏷️ Type: ${meta.account_type}\n`;
+  else reply += `🏷️ Group: ${account}\n`;
+  if (meta?.mobile) reply += `📱 Mobile: ${meta.mobile}\n`;
+  if (meta?.status && meta.status !== 'active') reply += `⚪ Status: ${meta.status}\n`;
+  reply += `\n💳 Total Debit: ${fmt(debit)} (${debitCount})\n`;
+  reply += `💰 Total Credit: ${fmt(credit)} (${creditCount})\n`;
+  reply += `⚖️ <b>${balanceLabel}: ${fmt(balance)}</b>\n`;
+  reply += `📊 ${rows.length} transaction(s)`;
+  if (firstDate && lastDate) reply += ` • ${firstDate} → ${lastDate}`;
+  reply += `\n`;
+
+  const recent = (dated.length ? dated.map((x) => x.r) : rows).slice(-10).reverse();
   if (recent.length) {
-    reply += `\n📝 <b>Recent:</b>\n`;
+    reply += `\n📝 <b>Recent (last ${recent.length}):</b>\n`;
     recent.forEach((r) => {
       const d = Number(r.debit) > 0 ? `Dr ${fmt(Number(r.debit))}` : `Cr ${fmt(Number(r.credit))}`;
       reply += `  • ${r.date || '-'} | ${d} | ${r.description || '-'}\n`;
     });
   }
+  reply += `\n<i>Tip: reply with a month (e.g. <b>april</b>) to filter, or <b>reset</b> to clear.</i>`;
   return reply;
 }
 
@@ -827,12 +920,37 @@ Deno.serve(async (req) => {
               console.log(`[telegram-poll] extracted`, ex);
             }
 
-            if (ex.confidence < 0.5 || ex.intent === 'unknown') {
-              reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+            // 5b) Always merge a local date parse (recovers dates lost by trained-intent shortcut or AI misses).
+            ex = mergeDate(ex, parseDateFromText(rawText));
+
+            // 5c) Bare-name fallback: short message + unknown intent → try customer lookup.
+            if (ex.intent === 'unknown') {
+              const tokens = rawText.trim().split(/\s+/);
+              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              if (isBareName) {
+                const cands = await findCustomerCandidates(supabase, rawText.trim());
+                if (cands.length >= 1) {
+                  ex = { ...ex, intent: 'customer_lookup', customer_query: rawText.trim(), confidence: 0.95 };
+                  console.log(`[telegram-poll] bare-name fallback → customer_lookup (${cands.length} candidates)`);
+                }
+              }
+            }
+
+            // 5d) Drop sticky context if this looks like a fresh top-level query.
+            const freshCtx = freshenContext(ex, rawText, context);
+
+            if (ex.confidence < 0.4 || ex.intent === 'unknown') {
+              const tokens = rawText.trim().split(/\s+/);
+              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              if (isBareName) {
+                reply = `❓ No customer found matching "<b>${rawText.trim()}</b>". Check the spelling or add an alias in the Training Center.`;
+              } else {
+                reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+              }
             } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
               reply = `❓ Which customer or staff did you mean? Please send the name.`;
             } else {
-              reply = await runIntent(supabase, ex, context, settings, chatId);
+              reply = await runIntent(supabase, ex, freshCtx, settings, chatId);
               attachFeedback = true;
             }
           }
