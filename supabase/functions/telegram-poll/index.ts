@@ -454,6 +454,29 @@ function customerLabel(c?: { name: string; account_id?: string }): string | unde
   return c.account_id ? `${c.name} (${c.account_id})` : c.name;
 }
 
+/** Drop sticky context.customer / context.date when a new message is a fresh top-level query. */
+function freshenContext(ex: Extracted, rawText: string, context: ConvContext): ConvContext {
+  const out: ConvContext = { ...context };
+  const lower = rawText.toLowerCase();
+  const referencesPrev = !!(out.customer && (
+    /\b(his|her|their|same)\b/.test(lower) ||
+    lower.includes(out.customer.name.toLowerCase())
+  ));
+  const topLevel = ['sales', 'purchase', 'expense', 'profit', 'report', 'stock'].includes(ex.intent);
+
+  // If extract provides its own customer_query, the runIntent customer resolution will override anyway —
+  // but clear sticky customer so we don't accidentally merge.
+  if (ex.customer_query) out.customer = undefined;
+
+  // Top-level totals/reports with no reference to previous customer → drop sticky customer.
+  if (topLevel && !ex.customer_query && !referencesPrev) out.customer = undefined;
+
+  // If the new query brings its own date phrase, drop sticky date so we don't merge.
+  if (ex.date_text || ex.month || ex.year) out.date = undefined;
+
+  return out;
+}
+
 // ---------- Handlers ----------
 
 async function fetchRows(supabase: any, opts: { customer?: string; account_id?: string; accountLike?: string }) {
