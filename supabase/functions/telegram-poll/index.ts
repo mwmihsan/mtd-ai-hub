@@ -697,13 +697,26 @@ async function answerPending(
       chosen = pending.candidates.find(
         (c) => c.name.toLowerCase() === t.toLowerCase() || c.account_id === t.toUpperCase(),
       );
+      // Numeric-prefix match (e.g. "1306" → "1306. JAWFER") within the offered candidates only.
+      if (!chosen) {
+        const numHit = t.trim().match(/^(\d{2,6})\.?$/);
+        if (numHit) {
+          const pref = numHit[1] + '.';
+          const matches = pending.candidates.filter((c) => c.name.trim().startsWith(pref));
+          if (matches.length === 1) chosen = matches[0];
+        }
+      }
     }
     if (!chosen) return { reply: '', consumed: false };
     const newCtx: ConvContext = {
       ...context,
       customer: { name: chosen.name, account_id: chosen.account_id ?? undefined },
     };
-    const reply = await runIntent(supabase, pending.original, newCtx, settings, chatId);
+    // CRITICAL: clear customer_query on the replayed extract so runIntent uses the
+    // selected context.customer instead of re-running the search and showing the same list.
+    const replay: Extracted = { ...pending.original, customer_query: null };
+    if (replay.intent === 'unknown') replay.intent = 'customer_lookup';
+    const reply = await runIntent(supabase, replay, newCtx, settings, chatId);
     return { reply, consumed: true };
   }
   if (pending.type === 'date_year' && pending.available_years && pending.original.month) {
