@@ -920,12 +920,37 @@ Deno.serve(async (req) => {
               console.log(`[telegram-poll] extracted`, ex);
             }
 
-            if (ex.confidence < 0.5 || ex.intent === 'unknown') {
-              reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+            // 5b) Always merge a local date parse (recovers dates lost by trained-intent shortcut or AI misses).
+            ex = mergeDate(ex, parseDateFromText(rawText));
+
+            // 5c) Bare-name fallback: short message + unknown intent → try customer lookup.
+            if (ex.intent === 'unknown') {
+              const tokens = rawText.trim().split(/\s+/);
+              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              if (isBareName) {
+                const cands = await findCustomerCandidates(supabase, rawText.trim());
+                if (cands.length >= 1) {
+                  ex = { ...ex, intent: 'customer_lookup', customer_query: rawText.trim(), confidence: 0.95 };
+                  console.log(`[telegram-poll] bare-name fallback → customer_lookup (${cands.length} candidates)`);
+                }
+              }
+            }
+
+            // 5d) Drop sticky context if this looks like a fresh top-level query.
+            const freshCtx = freshenContext(ex, rawText, context);
+
+            if (ex.confidence < 0.4 || ex.intent === 'unknown') {
+              const tokens = rawText.trim().split(/\s+/);
+              const isBareName = tokens.length > 0 && tokens.length <= 4 && /^[A-Za-z][A-Za-z .'-]*$/.test(rawText.trim());
+              if (isBareName) {
+                reply = `❓ No customer found matching "<b>${rawText.trim()}</b>". Check the spelling or add an alias in the Training Center.`;
+              } else {
+                reply = `🤔 I'm not sure what you're asking (confidence ${(ex.confidence * 100).toFixed(0)}%).\n\nTry: <i>sales april 2024</i>, <i>profit this year</i>, <i>nisran sales</i>, or type <b>help</b>.`;
+              }
             } else if (ex.confidence < 0.9 && ex.intent === 'customer_lookup' && !ex.customer_query) {
               reply = `❓ Which customer or staff did you mean? Please send the name.`;
             } else {
-              reply = await runIntent(supabase, ex, context, settings, chatId);
+              reply = await runIntent(supabase, ex, freshCtx, settings, chatId);
               attachFeedback = true;
             }
           }
