@@ -493,10 +493,12 @@ function customerLabel(c?: { name: string; account_id?: string }): string | unde
 function freshenContext(ex: Extracted, rawText: string, context: ConvContext): ConvContext {
   const out: ConvContext = { ...context };
   const lower = rawText.toLowerCase();
-  const referencesPrev = !!(out.customer && (
-    /\b(his|her|their|same)\b/.test(lower) ||
+  const prevKeyword = /\b(his|her|their|same|that|previous|above|prev)\b/.test(lower);
+  const referencesPrevCustomer = !!(out.customer && (
+    prevKeyword ||
     lower.includes(out.customer.name.toLowerCase())
   ));
+  const referencesPrev = referencesPrevCustomer || prevKeyword;
   const topLevel = ['sales', 'purchase', 'expense', 'profit', 'report', 'stock'].includes(ex.intent);
 
   // If extract provides its own customer_query, the runIntent customer resolution will override anyway —
@@ -504,10 +506,14 @@ function freshenContext(ex: Extracted, rawText: string, context: ConvContext): C
   if (ex.customer_query) out.customer = undefined;
 
   // Top-level totals/reports with no reference to previous customer → drop sticky customer.
-  if (topLevel && !ex.customer_query && !referencesPrev) out.customer = undefined;
+  if (topLevel && !ex.customer_query && !referencesPrevCustomer) out.customer = undefined;
 
   // If the new query brings its own date phrase, drop sticky date so we don't merge.
   if (ex.date_text || ex.month || ex.year) out.date = undefined;
+
+  // Drop sticky date whenever the new query does not explicitly reference the previous turn.
+  // A bare customer_lookup (just a name) or a fresh top-level query should NOT inherit a leftover date.
+  if (!referencesPrev) out.date = undefined;
 
   return out;
 }
