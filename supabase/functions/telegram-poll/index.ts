@@ -769,7 +769,8 @@ async function runIntent(
   if (resolved) context.date = resolved;
 
   // Need year if month-only
-  if (context.date && context.date.kind === 'month' && !context.date.year) {
+  const monthFromCurrent = !!(ex.month || ex.date_text);
+  if (context.date && context.date.kind === 'month' && !context.date.year && monthFromCurrent) {
     const years = await availableYears(supabase);
     if (years.length === 1) {
       context.date.year = years[0];
@@ -782,6 +783,9 @@ async function runIntent(
       }, context);
       return `📅 Which year for ${monthLabel(context.date.month!)}?\n\n${years.map((y, i) => `  ${i + 1}. ${y}`).join('\n')}\n\nReply with the year (e.g. <b>${years[years.length - 1]}</b>).`;
     }
+  } else if (context.date && context.date.kind === 'month' && !context.date.year && !monthFromCurrent) {
+    // Stale month-only date from earlier turn — discard, don't re-prompt.
+    context.date = undefined;
   }
 
   // Customer resolution
