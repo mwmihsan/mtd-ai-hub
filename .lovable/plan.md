@@ -1,22 +1,40 @@
-## Problem
-1. Asking "Kumar" triggers "Which year for March?" because a previous month-only query left `context.date = { month: 3, year: undefined }` sticky, and `freshenContext` only drops it when the new message itself contains a date phrase.
-2. Asking "Salman" returns March 2026 results because the year answered earlier was saved into `context.date` and inherited by the next unrelated customer query.
+## Changes to `supabase/functions/telegram-poll/index.ts`
 
-## Fix (single file: `supabase/functions/telegram-poll/index.ts`)
+### 1. Remove the "Applied filters" header from every reply
+- Replace `filtersHeader(...)` so it returns an empty string (keeping the function call sites intact). Removes the 📌 Applied filters block from sales/purchase/expense totals, profit, full report, and customer summary replies.
 
-1. **`freshenContext` — drop sticky `context.date` more aggressively**
-   - Drop `context.date` whenever the new message does not reference the previous turn ("his/her/their/same/that/previous/above" or the prior customer name).
-   - Always drop `context.date` for bare-name `customer_lookup` queries — a name on its own means "show this account overall".
+### 2. New intent: "group_balance" — sub-account balances under a main account
+Trigger phrases (case-insensitive, matched against raw text before AI extract):
+- `expenses` / `expences` → `EXPENCES`
+- `supplier balance` / `suppliers` → `SUPPLIERS`
+- `customer balance` / `customers` → `CUSTOMERS`
+- `partner balance` / `partners` → `PARTNERS`
+- `credit and debit balance` / `credits debits` → `CREDITS/DEBITS`
+- `bank balance` / `bank` → `BANK`
 
-2. **Discard stale `pending` on a fresh query**
-   - In the main pipeline, when `pending` exists and `answerPending` returns `consumed: false`, clear `pending` before continuing if the new message is a fresh query (bare name, new totals/report intent, or new customer_lookup).
-   - When the discarded pending was `date_year` or `date_month`, also clear `context.date` so the half-finished month doesn't survive.
+Implementation:
+- Add a `matchGroupKeyword(rawText)` helper returning the canonical `account` value (e.g. `EXPENCES`) or null.
+- In the main pipeline, run this match **before** AI intent extraction. If matched, short-circuit to a new `handleGroupBalance(supabase, mainAccount, ctx.date)` handler.
+- `handleGroupBalance`:
+  1. `select sub_account, credit, debit from account_rows where account = <mainAccount>` (apply optional date range from context).
+  2. Group rows by `sub_account`, compute `debit_sum`, `credit_sum`, `balance = debit_sum - credit_sum` (matches existing Dr−Cr convention used in `handleCustomerSummary`).
+  3. Sort by absolute balance descending; format reply as:
+     ```
+     📂 <b>EXPENCES</b> — sub-account balances
+     <date range line if any>
+     • SALMAN (ACC0325) — Dr 56,062
+     • …
+     ────────
+     Total Dr: …  Total Cr: …  Net: …
+     N sub-accounts
+     ```
+  4. Resolve `account_id` for each sub_account via a single batched lookup in `accounts_master` (by `account_name`) so the ID can be shown in parentheses.
+  5. If no rows, return `ℹ️ No transactions found under <mainAccount>.`
+- Add `'group_balance'` to the `Intent` union and to the AI enum/dispatch as a safety net (so AI can also route obvious phrasings), but the raw-text pre-match is the primary path so it works without the AI.
 
-3. **`runIntent` year-prompt guard**
-   - Only prompt "Which year for {month}?" when the month was supplied by the current extract (`ex.month` or `ex.date_text`), not from sticky `context.date`. Prevents re-asking the same question on unrelated follow-ups.
-
-## Validation
-- After an unanswered "march", sending "kumar" resolves Kumar without a year prompt.
-- After resolving a year, sending "salman" returns Salman across all time (or a normal customer summary), not March 2026.
-- Follow-ups like "his sales" or "same period purchase" still inherit previous customer/date.
-- Existing flows for `1306. Jawfer`, `ACC0003`, and numeric list selection are unchanged.
+### 3. Validation
+- "expenses" → list of all expense sub-accounts with balances.
+- "bank balance" → balances per bank sub-account.
+- "supplier balance" → balances per supplier sub-account.
+- Existing flows (customer summary, sales/purchase/expense totals, profit, report) unchanged except the "Applied filters" header is gone.
+- Numeric account selection (`1306. Jawfer`, `ACC0003`) still works because the group match only fires on the exact keyword set, not on names/numbers.
