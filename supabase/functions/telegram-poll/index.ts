@@ -1143,6 +1143,7 @@ Deno.serve(async (req) => {
               reply = await runIntent(supabase, ex, freshCtx, settings, chatId);
               attachFeedback = true;
             }
+            }
           }
         }
       }
