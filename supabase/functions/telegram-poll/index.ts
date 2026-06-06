@@ -946,9 +946,19 @@ Deno.serve(async (req) => {
       let attachFeedback = false;
 
       // 1) Pending clarification
+      let activePending = pending;
       if (pending) {
         const r = await answerPending(supabase, chatId, pending, rawText, context, settings);
         if (r.consumed) { reply = r.reply; attachFeedback = pending.type !== 'correction_text'; }
+        else {
+          // Pending was not consumed — user is asking something new.
+          // Drop stale pending so we don't keep re-prompting, and clear half-finished date.
+          activePending = null;
+          if (pending.type === 'date_year' || pending.type === 'date_month') {
+            context.date = undefined;
+          }
+          await saveState(supabase, chatId, null, context);
+        }
       }
 
       if (!reply) {
