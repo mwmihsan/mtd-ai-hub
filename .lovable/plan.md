@@ -1,47 +1,22 @@
-Implement a targeted Telegram bot accuracy patch in `supabase/functions/telegram-poll/index.ts`.
+## Problem
+1. Asking "Kumar" triggers "Which year for March?" because a previous month-only query left `context.date = { month: 3, year: undefined }` sticky, and `freshenContext` only drops it when the new message itself contains a date phrase.
+2. Asking "Salman" returns March 2026 results because the year answered earlier was saved into `context.date` and inherited by the next unrelated customer query.
 
-## Goal
-Make numbered sub-accounts like `1306. Jawfer`, `1024. Jawfer`, `1224. Ranjith`, etc. resolve by the exact account code/name instead of stripping the number and repeatedly asking for selection.
+## Fix (single file: `supabase/functions/telegram-poll/index.ts`)
 
-## Changes
+1. **`freshenContext` — drop sticky `context.date` more aggressively**
+   - Drop `context.date` whenever the new message does not reference the previous turn ("his/her/their/same/that/previous/above" or the prior customer name).
+   - Always drop `context.date` for bare-name `customer_lookup` queries — a name on its own means "show this account overall".
 
-1. Fix repeated account-selection loop
-- When the user replies `1`, `2`, or an Account ID to a multiple-account prompt, keep the selected account in context.
-- Replay the original request with `customer_query` cleared so `runIntent()` does not search `Jawfer` again and return the same selection list.
+2. **Discard stale `pending` on a fresh query**
+   - In the main pipeline, when `pending` exists and `answerPending` returns `consumed: false`, clear `pending` before continuing if the new message is a fresh query (bare name, new totals/report intent, or new customer_lookup).
+   - When the discarded pending was `date_year` or `date_month`, also clear `context.date` so the half-finished month doesn't survive.
 
-2. Add numbered sub-account parsing
-- Detect account-style inputs such as:
-  - `1306. Jawfer`
-  - `1306 Jawfer`
-  - `1306`
-  - `ACC0003`
-- Prefer exact Account ID / account-code matches before fuzzy name matching.
-- If `1306. Jawfer` uniquely maps to `ACC0003 — 1306. JAWFER`, return that account directly.
-- If the code/name combination does not uniquely match, show a clear shortlist with Account IDs and names.
-
-3. Preserve raw user text before AI extraction
-- The AI sometimes extracts only `Jawfer` from `1306. Jawfer`, which loses the important `1306` code.
-- Add a pre-resolution step using the raw Telegram text so exact numeric account codes are handled before the AI result is trusted.
-
-4. Improve candidate matching rules
-- Let bare-name fallback accept digits and dots, not only letters.
-- Allow selection by:
-  - list number (`1`)
-  - Account ID (`ACC0003`)
-  - full account name (`1306. JAWFER`)
-  - numeric prefix (`1306`) when it uniquely identifies a listed candidate.
-
-5. Keep no-guessing behavior
-- Do not merge `1024. JAWFER`, `1187. JAWFER`, and `1306. JAWFER`.
-- If a query is not exact, continue showing the account list with IDs.
-- Example: if the database has `1386. RAJANTHA` but the user asks `1386. Ranjith`, the bot should not silently choose the wrong account; it should ask for clarification or show closest valid matches.
+3. **`runIntent` year-prompt guard**
+   - Only prompt "Which year for {month}?" when the month was supplied by the current extract (`ex.month` or `ex.date_text`), not from sticky `context.date`. Prevents re-asking the same question on unrelated follow-ups.
 
 ## Validation
-- Check database samples for `Jawfer` and `Ranjith` account rows.
-- Deploy the updated Telegram function.
-- Verify these flows from logs/function behavior:
-  - `1306. Jawfer` resolves directly to `ACC0003 — 1306. JAWFER`.
-  - `Jawfer` still shows multiple accounts.
-  - Replying `1` to a multiple-account list returns the selected account summary, not the same list again.
-  - `1224. Ranjith` resolves directly.
-  - Ambiguous or mismatched code/name queries do not guess.
+- After an unanswered "march", sending "kumar" resolves Kumar without a year prompt.
+- After resolving a year, sending "salman" returns Salman across all time (or a normal customer summary), not March 2026.
+- Follow-ups like "his sales" or "same period purchase" still inherit previous customer/date.
+- Existing flows for `1306. Jawfer`, `ACC0003`, and numeric list selection are unchanged.

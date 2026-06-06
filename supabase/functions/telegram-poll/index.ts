@@ -493,10 +493,12 @@ function customerLabel(c?: { name: string; account_id?: string }): string | unde
 function freshenContext(ex: Extracted, rawText: string, context: ConvContext): ConvContext {
   const out: ConvContext = { ...context };
   const lower = rawText.toLowerCase();
-  const referencesPrev = !!(out.customer && (
-    /\b(his|her|their|same)\b/.test(lower) ||
+  const prevKeyword = /\b(his|her|their|same|that|previous|above|prev)\b/.test(lower);
+  const referencesPrevCustomer = !!(out.customer && (
+    prevKeyword ||
     lower.includes(out.customer.name.toLowerCase())
   ));
+  const referencesPrev = referencesPrevCustomer || prevKeyword;
   const topLevel = ['sales', 'purchase', 'expense', 'profit', 'report', 'stock'].includes(ex.intent);
 
   // If extract provides its own customer_query, the runIntent customer resolution will override anyway —
@@ -504,10 +506,14 @@ function freshenContext(ex: Extracted, rawText: string, context: ConvContext): C
   if (ex.customer_query) out.customer = undefined;
 
   // Top-level totals/reports with no reference to previous customer → drop sticky customer.
-  if (topLevel && !ex.customer_query && !referencesPrev) out.customer = undefined;
+  if (topLevel && !ex.customer_query && !referencesPrevCustomer) out.customer = undefined;
 
   // If the new query brings its own date phrase, drop sticky date so we don't merge.
   if (ex.date_text || ex.month || ex.year) out.date = undefined;
+
+  // Drop sticky date whenever the new query does not explicitly reference the previous turn.
+  // A bare customer_lookup (just a name) or a fresh top-level query should NOT inherit a leftover date.
+  if (!referencesPrev) out.date = undefined;
 
   return out;
 }
@@ -763,7 +769,8 @@ async function runIntent(
   if (resolved) context.date = resolved;
 
   // Need year if month-only
-  if (context.date && context.date.kind === 'month' && !context.date.year) {
+  const monthFromCurrent = !!(ex.month || ex.date_text);
+  if (context.date && context.date.kind === 'month' && !context.date.year && monthFromCurrent) {
     const years = await availableYears(supabase);
     if (years.length === 1) {
       context.date.year = years[0];
@@ -776,6 +783,9 @@ async function runIntent(
       }, context);
       return `📅 Which year for ${monthLabel(context.date.month!)}?\n\n${years.map((y, i) => `  ${i + 1}. ${y}`).join('\n')}\n\nReply with the year (e.g. <b>${years[years.length - 1]}</b>).`;
     }
+  } else if (context.date && context.date.kind === 'month' && !context.date.year && !monthFromCurrent) {
+    // Stale month-only date from earlier turn — discard, don't re-prompt.
+    context.date = undefined;
   }
 
   // Customer resolution
@@ -936,9 +946,19 @@ Deno.serve(async (req) => {
       let attachFeedback = false;
 
       // 1) Pending clarification
+      let activePending = pending;
       if (pending) {
         const r = await answerPending(supabase, chatId, pending, rawText, context, settings);
         if (r.consumed) { reply = r.reply; attachFeedback = pending.type !== 'correction_text'; }
+        else {
+          // Pending was not consumed — user is asking something new.
+          // Drop stale pending so we don't keep re-prompting, and clear half-finished date.
+          activePending = null;
+          if (pending.type === 'date_year' || pending.type === 'date_month') {
+            context.date = undefined;
+          }
+          await saveState(supabase, chatId, null, context);
+        }
       }
 
       if (!reply) {
