@@ -478,10 +478,9 @@ async function clearPending(supabase: any, chatId: number, context: ConvContext)
 // ---------- Filters header ----------
 
 function filtersHeader(ctx: { customer?: string; date?: DateRange; report: string }): string {
-  return `📌 <b>Applied filters</b>\n` +
-    `  • Customer: ${ctx.customer || 'All'}\n` +
-    `  • Date range: ${ctx.date?.label || 'All time'}\n` +
-    `  • Report type: ${ctx.report}\n\n`;
+  // Header intentionally removed — users found the "Applied filters" block noisy.
+  void ctx;
+  return '';
 }
 
 function customerLabel(c?: { name: string; account_id?: string }): string | undefined {
