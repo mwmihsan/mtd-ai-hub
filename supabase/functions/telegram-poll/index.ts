@@ -478,10 +478,9 @@ async function clearPending(supabase: any, chatId: number, context: ConvContext)
 // ---------- Filters header ----------
 
 function filtersHeader(ctx: { customer?: string; date?: DateRange; report: string }): string {
-  return `📌 <b>Applied filters</b>\n` +
-    `  • Customer: ${ctx.customer || 'All'}\n` +
-    `  • Date range: ${ctx.date?.label || 'All time'}\n` +
-    `  • Report type: ${ctx.report}\n\n`;
+  // Header intentionally removed — users found the "Applied filters" block noisy.
+  void ctx;
+  return '';
 }
 
 function customerLabel(c?: { name: string; account_id?: string }): string | undefined {
@@ -680,6 +679,94 @@ function handleHelp(): string {
     `  • <i>expense today</i>\n` +
     `  • <i>report</i>\n\n` +
     `Type <b>reset</b> to clear the current customer/date context.`;
+}
+
+// ---------- Group (main account) balance ----------
+
+// Map keyword phrases → canonical value of the `account` column in account_rows.
+const GROUP_KEYWORDS: Array<{ re: RegExp; account: string }> = [
+  { re: /^(expenses?|expences?|expense balance|expences balance)$/i, account: 'EXPENCES' },
+  { re: /^(supplier(s)?( balance)?|supplier accounts?)$/i, account: 'SUPPLIERS' },
+  { re: /^(customer(s)?( balance)?|customer accounts?)$/i, account: 'CUSTOMERS' },
+  { re: /^(partner(s)?( balance)?|partner accounts?)$/i, account: 'PARTNERS' },
+  { re: /^(credit and debit( balance)?|credits? debits?( balance)?|credit\/debit( balance)?|debit\/credit( balance)?)$/i, account: 'CREDITS/DEBITS' },
+  { re: /^(bank( balance)?|bank accounts?|banks)$/i, account: 'BANK' },
+];
+
+function matchGroupKeyword(rawText: string): string | null {
+  const t = rawText.trim().toLowerCase().replace(/\s+/g, ' ');
+  for (const g of GROUP_KEYWORDS) {
+    if (g.re.test(t)) return g.account;
+  }
+  return null;
+}
+
+async function handleGroupBalance(supabase: any, mainAccount: string, ctx: ConvContext): Promise<string> {
+  const range = ctx.date ?? { kind: 'all', label: 'All time' };
+  const { data } = await supabase
+    .from('account_rows')
+    .select('sub_account, debit, credit, date, account_id')
+    .eq('account', mainAccount);
+  const rows = applyDateFilter(data ?? [], range);
+  if (!rows.length) {
+    return `ℹ️ No transactions found under <b>${mainAccount}</b>${range.kind !== 'all' ? ` for ${range.label}` : ''}.`;
+  }
+
+  const groups = new Map<string, { debit: number; credit: number; account_id?: string }>();
+  for (const r of rows) {
+    const key = (r.sub_account || 'Unknown').toString();
+    const g = groups.get(key) ?? { debit: 0, credit: 0, account_id: r.account_id ?? undefined };
+    g.debit += Number(r.debit || 0);
+    g.credit += Number(r.credit || 0);
+    if (!g.account_id && r.account_id) g.account_id = r.account_id;
+    groups.set(key, g);
+  }
+
+  // Suppliers normally carry credit balances; everything else use Dr − Cr.
+  const isSupplierGroup = mainAccount === 'SUPPLIERS';
+  const balOf = (g: { debit: number; credit: number }) =>
+    isSupplierGroup ? g.credit - g.debit : g.debit - g.credit;
+
+  // Fill missing account_ids from accounts_master in one batched lookup.
+  const namesToLookup = Array.from(groups.entries())
+    .filter(([, g]) => !g.account_id)
+    .map(([n]) => n);
+  if (namesToLookup.length) {
+    const { data: masters } = await supabase
+      .from('accounts_master')
+      .select('account_id, account_name')
+      .in('account_name', namesToLookup);
+    for (const m of masters ?? []) {
+      const g = groups.get(m.account_name);
+      if (g && !g.account_id) g.account_id = m.account_id;
+    }
+  }
+
+  const list = Array.from(groups.entries())
+    .map(([name, g]) => ({ name, ...g, bal: balOf(g) }))
+    .sort((a, b) => Math.abs(b.bal) - Math.abs(a.bal));
+
+  const totalDebit = list.reduce((s, x) => s + x.debit, 0);
+  const totalCredit = list.reduce((s, x) => s + x.credit, 0);
+  const net = isSupplierGroup ? totalCredit - totalDebit : totalDebit - totalCredit;
+  const netLabel = isSupplierGroup ? 'Net (Cr − Dr)' : 'Net (Dr − Cr)';
+
+  let reply = `📂 <b>${mainAccount}</b> — sub-account balances\n`;
+  if (range.kind !== 'all') reply += `📅 ${range.label}\n`;
+  reply += `\n`;
+  const MAX = 40;
+  list.slice(0, MAX).forEach((x) => {
+    const sign = x.bal >= 0 ? (isSupplierGroup ? 'Cr' : 'Dr') : (isSupplierGroup ? 'Dr' : 'Cr');
+    const id = x.account_id ? ` <code>${x.account_id}</code>` : '';
+    reply += `  • ${x.name}${id} — ${sign} ${fmt(Math.abs(x.bal))}\n`;
+  });
+  if (list.length > MAX) reply += `  …and ${list.length - MAX} more\n`;
+  reply += `\n────────\n`;
+  reply += `💳 Total Debit: ${fmt(totalDebit)}\n`;
+  reply += `💰 Total Credit: ${fmt(totalCredit)}\n`;
+  reply += `⚖️ <b>${netLabel}: ${fmt(net)}</b>\n`;
+  reply += `📊 ${list.length} sub-account(s) • ${rows.length} transaction(s)`;
+  return reply;
 }
 
 // ---------- Orchestrator ----------
@@ -975,6 +1062,18 @@ Deno.serve(async (req) => {
           } else {
             // 3) Alias expansion
             const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 3a) Group/main-account keyword (expenses, bank balance, supplier balance, etc.)
+            const groupAcc = matchGroupKeyword(rawText);
+            if (groupAcc) {
+              const freshCtx = freshenContext(
+                { intent: 'report', confidence: 1 } as Extracted,
+                rawText,
+                context,
+              );
+              await clearPending(supabase, chatId, freshCtx);
+              reply = await handleGroupBalance(supabase, groupAcc, freshCtx);
+              attachFeedback = true;
+            } else {
             // 3b) Raw-text exact account match (handles "1306. Jawfer", "ACC0003", "1306").
             //     This runs BEFORE the AI so numeric prefixes are not stripped.
             let preCands: Array<{ account_id: string | null; name: string }> | null = null;
@@ -1043,6 +1142,7 @@ Deno.serve(async (req) => {
             } else {
               reply = await runIntent(supabase, ex, freshCtx, settings, chatId);
               attachFeedback = true;
+            }
             }
           }
         }
