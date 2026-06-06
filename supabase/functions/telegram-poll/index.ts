@@ -1062,6 +1062,18 @@ Deno.serve(async (req) => {
           } else {
             // 3) Alias expansion
             const { text: expanded, resolved } = await expandAliases(supabase, rawText);
+            // 3a) Group/main-account keyword (expenses, bank balance, supplier balance, etc.)
+            const groupAcc = matchGroupKeyword(rawText);
+            if (groupAcc) {
+              const freshCtx = freshenContext(
+                { intent: 'report', confidence: 1 } as Extracted,
+                rawText,
+                context,
+              );
+              await clearPending(supabase, chatId, freshCtx);
+              reply = await handleGroupBalance(supabase, groupAcc, freshCtx);
+              attachFeedback = true;
+            } else {
             // 3b) Raw-text exact account match (handles "1306. Jawfer", "ACC0003", "1306").
             //     This runs BEFORE the AI so numeric prefixes are not stripped.
             let preCands: Array<{ account_id: string | null; name: string }> | null = null;
